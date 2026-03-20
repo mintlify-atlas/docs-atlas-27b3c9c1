@@ -1,0 +1,134 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "terraform-aws-eks",
+  "projectDescription": "A Terraform module for creating and managing Amazon EKS (Elastic Kubernetes Service) clusters with support for managed node groups, self-managed node groups, Fargate profiles, EKS Auto Mode, and Karpenter.",
+  "theme": "aspen",
+  "primaryColor": "#594ed8",
+  "lightColor": "#acacf4",
+  "darkColor": "#040404",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Compute Resources",
+            "pages": [
+              "compute/overview",
+              "compute/eks-managed-node-groups",
+              "compute/self-managed-node-groups",
+              "compute/fargate-profiles",
+              "compute/eks-auto-mode"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/network-connectivity",
+              "configuration/user-data",
+              "configuration/access-entries",
+              "configuration/addons",
+              "configuration/irsa",
+              "configuration/encryption"
+            ]
+          },
+          {
+            "group": "Sub-Modules",
+            "pages": [
+              "modules/karpenter",
+              "modules/hybrid-node-role",
+              "modules/eks-managed-node-group",
+              "modules/self-managed-node-group",
+              "modules/fargate-profile"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/eks-auto-mode",
+              "examples/eks-managed-node-group",
+              "examples/self-managed-node-group",
+              "examples/fargate",
+              "examples/karpenter",
+              "examples/eks-hybrid-nodes"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/faq",
+              "operations/upgrade-guides"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Root Module",
+            "pages": [
+              "reference/inputs",
+              "reference/outputs"
+            ]
+          },
+          {
+            "group": "Sub-Module Reference",
+            "pages": [
+              "reference/eks-managed-node-group",
+              "reference/self-managed-node-group",
+              "reference/fargate-profile",
+              "reference/karpenter"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "EKS Auto Mode with built-in and custom node pools",
+    "EKS Managed Node Groups with custom launch templates",
+    "Self-Managed Node Groups with full EC2 Auto Scaling customization",
+    "Fargate Profiles for serverless compute",
+    "Karpenter sub-module for intelligent node autoscaling",
+    "EKS Hybrid Nodes for connecting on-premises and edge nodes",
+    "IRSA (IAM Roles for Service Accounts) via OIDC provider",
+    "Cluster Access Entries for IAM-based authentication",
+    "KMS encryption for secrets at rest",
+    "EFA (Elastic Fabric Adapter) support for high-performance networking",
+    "EKS Provisioned Control Plane scaling tiers",
+    "CloudWatch logging for control plane audit and API logs"
+  ],
+  "publicApiSurface": [
+    "module eks (root module)",
+    "module eks-managed-node-group",
+    "module self-managed-node-group",
+    "module fargate-profile",
+    "module karpenter",
+    "module hybrid-node-role",
+    "variable: name",
+    "variable: kubernetes_version",
+    "variable: eks_managed_node_groups",
+    "variable: self_managed_node_groups",
+    "variable: fargate_profiles",
+    "variable: compute_config",
+    "variable: access_entries",
+    "variable: addons",
+    "variable: enable_irsa",
+    "variable: authentication_mode",
+    "output: cluster_arn",
+    "output: cluster_endpoint",
+    "output: cluster_name",
+    "output: oidc_provider_arn",
+    "output: eks_managed_node_groups",
+    "output: fargate_profiles",
+    "output: self_managed_node_groups"
+  ]
+}
