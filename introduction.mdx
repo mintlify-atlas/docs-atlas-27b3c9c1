@@ -43,13 +43,16 @@ When you invoke the module, it creates and manages the following AWS resources:
 | KMS key (via `terraform-aws-modules/kms/aws`) | Encrypts Kubernetes secrets at rest |
 | `time_sleep` | Waits for the control plane to become ready before creating node groups |
 
-The module also wraps three sub-modules for compute:
+The module also includes six sub-modules:
 
 | Sub-module | What it manages |
 |---|---|
 | `modules/eks-managed-node-group` | EKS managed node groups |
 | `modules/self-managed-node-group` | Self-managed node groups (Auto Scaling Groups) |
 | `modules/fargate-profile` | Fargate profiles |
+| `modules/karpenter` | IAM roles, SQS queue, and EventBridge rules for Karpenter autoscaler |
+| `modules/hybrid-node-role` | IAM role for EKS Hybrid Nodes (SSM or IAM Roles Anywhere) |
+| `modules/capability` | EKS Capabilities (ACK, ArgoCD, KRO) |
 
 ## Provider and Terraform requirements
 

@@ -1,0 +1,225 @@
+---
+title: "EKS Capabilities Example"
+description: "Deploy ACK, ArgoCD, and KRO EKS Capabilities onto an EKS cluster using the capability sub-module."
+---
+
+This example demonstrates how to install AWS-managed EKS Capabilities — including ACK (AWS Controllers for Kubernetes), ArgoCD, and KRO (Kubernetes Resource Orchestrator) — on an EKS cluster.
+
+<Note>
+  The ArgoCD capability requires AWS Identity Center (IAM Identity Center / SSO) to be enabled in your account. The example uses `us-east-1` as the region since that is where Identity Center is typically configured.
+</Note>
+
+## Prerequisites
+
+- An existing VPC with private subnets.
+- AWS Identity Center enabled (required for the ArgoCD capability).
+- Terraform `>= 1.5.7` and the AWS provider `>= 6.28`.
+
+## Configuration
+
+The example creates three capabilities on the same EKS cluster: ACK, ArgoCD, and KRO.
+
+```hcl main.tf
+provider "aws" {
+  region = local.region
+}
+
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+# Required for ArgoCD capability
+data "aws_ssoadmin_instances" "this" {}
+
+data "aws_identitystore_group" "aws_administrator" {
+  identity_store_id = one(data.aws_ssoadmin_instances.this.identity_store_ids)
+
+  alternate_identifier {
+    unique_attribute {
+      attribute_path  = "DisplayName"
+      attribute_value = "AWSAdministrator"
+    }
+  }
+}
+
+locals {
+  name   = "ex-eks-capabilities"
+  region = "us-east-1"
+
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    Example    = local.name
+    GithubRepo = "terraform-aws-eks"
+    GithubOrg  = "terraform-aws-modules"
+  }
+}
+
+################################################################################
+# EKS Cluster
+################################################################################
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name                   = local.name
+  kubernetes_version     = "1.34"
+  endpoint_public_access = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  compute_config = {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  tags = local.tags
+}
+
+################################################################################
+# EKS Capabilities
+################################################################################
+
+module "ack_eks_capability" {
+  source  = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.0"
+
+  type         = "ACK"
+  cluster_name = module.eks.cluster_name
+
+  iam_role_policies = {
+    AdministratorAccess = "arn:aws:iam::aws:policy/AdministratorAccess"
+  }
+
+  tags = local.tags
+}
+
+module "argocd_eks_capability" {
+  source  = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.0"
+
+  type         = "ARGOCD"
+  cluster_name = module.eks.cluster_name
+
+  configuration = {
+    argo_cd = {
+      aws_idc = {
+        idc_instance_arn = one(data.aws_ssoadmin_instances.this.arns)
+      }
+      namespace = "argocd"
+      rbac_role_mapping = [{
+        role = "ADMIN"
+        identity = [{
+          id   = data.aws_identitystore_group.aws_administrator.group_id
+          type = "SSO_GROUP"
+        }]
+      }]
+    }
+  }
+
+  iam_policy_statements = {
+    ECRRead = {
+      actions = [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+      ]
+      resources = ["*"]
+    }
+  }
+
+  tags = local.tags
+}
+
+module "kro_eks_capability" {
+  source  = "terraform-aws-modules/eks/aws//modules/capability"
+  version = "~> 21.0"
+
+  type         = "KRO"
+  cluster_name = module.eks.cluster_name
+
+  tags = local.tags
+}
+
+################################################################################
+# Supporting Resources
+################################################################################
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 52)]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+
+  tags = local.tags
+}
+```
+
+## Deploy
+
+<Steps>
+  <Step title="Initialize Terraform">
+    ```bash
+    terraform init
+    ```
+  </Step>
+  <Step title="Review the plan">
+    ```bash
+    terraform plan
+    ```
+
+    Inspect the planned resources. You should see the EKS cluster, VPC, and three capability modules.
+  </Step>
+  <Step title="Apply">
+    ```bash
+    terraform apply
+    ```
+
+    Cluster creation takes approximately 10–15 minutes. The capabilities are installed after the cluster is active.
+  </Step>
+</Steps>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `module.ack_eks_capability.arn` | ARN of the ACK EKS Capability |
+| `module.argocd_eks_capability.arn` | ARN of the ArgoCD EKS Capability |
+| `module.argocd_eks_capability.argocd_server_url` | URL to reach the ArgoCD server |
+| `module.kro_eks_capability.arn` | ARN of the KRO EKS Capability |
+
+## Clean up
+
+```bash
+terraform destroy
+```
+
+<Warning>
+  Destroying the capabilities and cluster is irreversible. Ensure you have backed up any workloads and state stored in the cluster before running `terraform destroy`.
+</Warning>

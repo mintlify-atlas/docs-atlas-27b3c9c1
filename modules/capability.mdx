@@ -1,0 +1,208 @@
+---
+title: "EKS Capability"
+description: "Sub-module that installs and configures AWS-managed EKS Capabilities — including ACK (AWS Controllers for Kubernetes), ArgoCD, and KRO — with the required IAM roles and policies."
+---
+
+The `capability` sub-module creates the AWS resources required to install an EKS Capability onto an existing cluster. EKS Capabilities are AWS-managed add-ons that integrate popular open-source tools directly into EKS.
+
+## Supported capability types
+
+| Type | Description |
+|------|-------------|
+| `ACK` | AWS Controllers for Kubernetes — manage AWS services via Kubernetes custom resources |
+| `ARGOCD` | Argo CD — GitOps continuous delivery with AWS Identity Center (SSO) integration |
+| `KRO` | Kubernetes Resource Orchestrator — compose and deploy complex Kubernetes resource groups |
+
+## Usage
+
+<Tabs>
+  <Tab title="ACK">
+    ```hcl
+    module "ack_eks_capability" {
+      source  = "terraform-aws-modules/eks/aws//modules/capability"
+      version = "~> 21.0"
+
+      type         = "ACK"
+      cluster_name = module.eks.cluster_name
+
+      # IAM Role/Policy
+      iam_role_policies = {
+        AdministratorAccess = "arn:aws:iam::aws:policy/AdministratorAccess"
+      }
+
+      tags = {
+        Environment = "dev"
+        Terraform   = "true"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="ArgoCD">
+    ArgoCD requires AWS Identity Center (SSO) configuration.
+
+    ```hcl
+    module "argocd_eks_capability" {
+      source  = "terraform-aws-modules/eks/aws//modules/capability"
+      version = "~> 21.0"
+
+      type         = "ARGOCD"
+      cluster_name = module.eks.cluster_name
+
+      configuration = {
+        argo_cd = {
+          aws_idc = {
+            idc_instance_arn = "arn:aws:sso:::instance/ssoins-1234567890abcdef0"
+          }
+          namespace = "argocd"
+          rbac_role_mapping = [{
+            role = "ADMIN"
+            identity = [{
+              id   = "686103e0-f051-7068-b225-e6392b959d9e"
+              type = "SSO_GROUP"
+            }]
+          }]
+        }
+      }
+
+      iam_policy_statements = {
+        ECRRead = {
+          actions = [
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:BatchGetImage",
+          ]
+          resources = ["*"]
+        }
+      }
+
+      tags = {
+        Environment = "dev"
+        Terraform   = "true"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="KRO">
+    ```hcl
+    module "kro_eks_capability" {
+      source  = "terraform-aws-modules/eks/aws//modules/capability"
+      version = "~> 21.0"
+
+      type         = "KRO"
+      cluster_name = module.eks.cluster_name
+
+      tags = {
+        Environment = "dev"
+        Terraform   = "true"
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Key inputs
+
+<ParamField path="type" type="string" required>
+  The capability type. Valid values: `ACK`, `ARGOCD`, `KRO`.
+</ParamField>
+
+<ParamField path="cluster_name" type="string" required>
+  The name of the EKS cluster to install the capability on.
+</ParamField>
+
+<ParamField path="create" type="bool" default="true">
+  Controls whether resources are created. Set to `false` to disable the module without removing it from configuration.
+</ParamField>
+
+<ParamField path="configuration" type="object" default="null">
+  Capability-specific configuration. Currently only used for `ARGOCD` type.
+
+  <Expandable title="ARGOCD configuration fields">
+    <ParamField path="configuration.argo_cd.aws_idc.idc_instance_arn" type="string" required>
+      ARN of the AWS Identity Center instance.
+    </ParamField>
+    <ParamField path="configuration.argo_cd.aws_idc.idc_region" type="string">
+      Region of the AWS Identity Center instance. Defaults to the provider region.
+    </ParamField>
+    <ParamField path="configuration.argo_cd.namespace" type="string">
+      Kubernetes namespace where ArgoCD is installed. Defaults to `argocd`.
+    </ParamField>
+    <ParamField path="configuration.argo_cd.rbac_role_mapping" type="list(object)">
+      List of role mappings from AWS Identity Center groups/users to ArgoCD RBAC roles.
+    </ParamField>
+    <ParamField path="configuration.argo_cd.network_access.vpce_ids" type="list(string)">
+      List of VPC endpoint IDs for private access to the ArgoCD server.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="name" type="string" default="">
+  Name for the capability. Defaults to an empty string (uses module key).
+</ParamField>
+
+<ParamField path="region" type="string" default="null">
+  AWS region. Defaults to the provider region.
+</ParamField>
+
+### IAM role inputs
+
+<ParamField path="iam_role_policies" type="map(string)" default="{}">
+  Map of IAM managed policy ARNs to attach to the capability IAM role. Key is a static label; value is the policy ARN.
+</ParamField>
+
+<ParamField path="iam_policy_statements" type="map(object)">
+  Map of inline IAM policy statements to create and attach to the capability IAM role.
+</ParamField>
+
+<ParamField path="iam_role_name" type="string" default="null">
+  Override name for the IAM role. Defaults to derived from capability type and cluster name.
+</ParamField>
+
+<ParamField path="iam_role_use_name_prefix" type="bool" default="true">
+  Whether to use `iam_role_name` as a name prefix.
+</ParamField>
+
+<ParamField path="iam_role_permissions_boundary_arn" type="string" default="null">
+  ARN of a permissions boundary policy to attach to the IAM role.
+</ParamField>
+
+<ParamField path="tags" type="map(string)" default="{}">
+  Map of tags to apply to all resources created.
+</ParamField>
+
+## Outputs
+
+<ResponseField name="arn" type="string">
+  The ARN of the EKS Capability.
+</ResponseField>
+
+<ResponseField name="version" type="string">
+  The version of the installed EKS Capability.
+</ResponseField>
+
+<ResponseField name="argocd_server_url" type="string">
+  URL of the Argo CD server. Only populated when `type = "ARGOCD"`.
+</ResponseField>
+
+<ResponseField name="iam_role_name" type="string">
+  The name of the IAM role created for the capability.
+</ResponseField>
+
+<ResponseField name="iam_role_arn" type="string">
+  The ARN of the IAM role created for the capability.
+</ResponseField>
+
+<ResponseField name="iam_role_unique_id" type="string">
+  Stable and unique string identifying the IAM role.
+</ResponseField>
+
+## Notes
+
+<Note>
+  The `capability` sub-module requires the EKS cluster to be active before installing capabilities. Ensure the root `module.eks` is created before referencing `module.eks.cluster_name` in the capability module.
+</Note>
+
+<Note>
+  For `ARGOCD` type, your AWS account must have AWS Identity Center (IAM Identity Center / SSO) enabled. The `idc_instance_arn` must match the region where your Identity Center is configured (typically `us-east-1`).
+</Note>

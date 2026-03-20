@@ -63,7 +63,8 @@
               "modules/hybrid-node-role",
               "modules/eks-managed-node-group",
               "modules/self-managed-node-group",
-              "modules/fargate-profile"
+              "modules/fargate-profile",
+              "modules/capability"
             ]
           },
           {
@@ -74,7 +75,8 @@
               "examples/self-managed-node-group",
               "examples/fargate",
               "examples/karpenter",
-              "examples/eks-hybrid-nodes"
+              "examples/eks-hybrid-nodes",
+              "examples/eks-capabilities"
             ]
           },
           {

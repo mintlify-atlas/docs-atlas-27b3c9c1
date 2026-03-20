@@ -304,7 +304,7 @@ Nodes failing to register with the EKS control plane is almost always a networki
   </Step>
 
   <Step title="Enable the private endpoint for internal traffic">
-    Setting `cluster_endpoint_private_access = true` allows nodes to communicate with the API server over the private network. Ensure VPC DNS resolution and DNS hostnames are enabled.
+    Setting `endpoint_private_access = true` allows nodes to communicate with the API server over the private network. Ensure VPC DNS resolution and DNS hostnames are enabled.
   </Step>
 
   <Step title="Add VPC endpoints for air-gapped environments">
