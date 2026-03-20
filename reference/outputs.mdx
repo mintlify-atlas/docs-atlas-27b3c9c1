@@ -1,0 +1,202 @@
+---
+title: Outputs
+description: All output values for the terraform-aws-eks root module, grouped by category.
+---
+
+## Cluster
+
+<ResponseField name="cluster_arn" type="string">
+  The Amazon Resource Name (ARN) of the cluster.
+</ResponseField>
+
+<ResponseField name="cluster_certificate_authority_data" type="string">
+  Base64 encoded certificate data required to communicate with the cluster.
+</ResponseField>
+
+<ResponseField name="cluster_endpoint" type="string">
+  Endpoint for your Kubernetes API server.
+</ResponseField>
+
+<ResponseField name="cluster_id" type="string">
+  The ID of the EKS cluster. Note: currently a value is returned only for local EKS clusters created on Outposts.
+</ResponseField>
+
+<ResponseField name="cluster_name" type="string">
+  The name of the EKS cluster.
+</ResponseField>
+
+<ResponseField name="cluster_oidc_issuer_url" type="string">
+  The URL on the EKS cluster for the OpenID Connect identity provider.
+</ResponseField>
+
+<ResponseField name="cluster_dualstack_oidc_issuer_url" type="string">
+  Dual-stack compatible URL on the EKS cluster for the OpenID Connect identity provider.
+</ResponseField>
+
+<ResponseField name="cluster_version" type="string">
+  The Kubernetes version for the cluster.
+</ResponseField>
+
+<ResponseField name="cluster_platform_version" type="string">
+  Platform version for the cluster.
+</ResponseField>
+
+<ResponseField name="cluster_status" type="string">
+  Status of the EKS cluster. One of `CREATING`, `ACTIVE`, `DELETING`, `FAILED`.
+</ResponseField>
+
+<ResponseField name="cluster_primary_security_group_id" type="string">
+  Cluster security group that was created by Amazon EKS for the cluster. Managed node groups use this security group for control-plane-to-data-plane communication. Referred to as 'Cluster security group' in the EKS console.
+</ResponseField>
+
+<ResponseField name="cluster_service_cidr" type="string">
+  The CIDR block where Kubernetes pod and service IP addresses are assigned from.
+</ResponseField>
+
+<ResponseField name="cluster_ip_family" type="string">
+  The IP family used by the cluster (e.g. `ipv4` or `ipv6`).
+</ResponseField>
+
+<ResponseField name="cluster_control_plane_scaling_tier" type="string">
+  The EKS Provisioned Control Plane scaling tier for the cluster.
+</ResponseField>
+
+---
+
+## Security Groups
+
+<ResponseField name="cluster_security_group_arn" type="string">
+  Amazon Resource Name (ARN) of the cluster security group.
+</ResponseField>
+
+<ResponseField name="cluster_security_group_id" type="string">
+  ID of the cluster security group.
+</ResponseField>
+
+<ResponseField name="node_security_group_arn" type="string">
+  Amazon Resource Name (ARN) of the node shared security group.
+</ResponseField>
+
+<ResponseField name="node_security_group_id" type="string">
+  ID of the node shared security group.
+</ResponseField>
+
+---
+
+## IAM
+
+<ResponseField name="cluster_iam_role_name" type="string">
+  Cluster IAM role name.
+</ResponseField>
+
+<ResponseField name="cluster_iam_role_arn" type="string">
+  Cluster IAM role ARN.
+</ResponseField>
+
+<ResponseField name="cluster_iam_role_unique_id" type="string">
+  Stable and unique string identifying the IAM role.
+</ResponseField>
+
+<ResponseField name="node_iam_role_name" type="string">
+  EKS Auto node IAM role name.
+</ResponseField>
+
+<ResponseField name="node_iam_role_arn" type="string">
+  EKS Auto node IAM role ARN.
+</ResponseField>
+
+<ResponseField name="node_iam_role_unique_id" type="string">
+  Stable and unique string identifying the EKS Auto node IAM role.
+</ResponseField>
+
+---
+
+## IRSA
+
+<ResponseField name="oidc_provider" type="string">
+  The OpenID Connect identity provider (issuer URL without leading `https://`).
+</ResponseField>
+
+<ResponseField name="oidc_provider_arn" type="string">
+  The ARN of the OIDC Provider if `enable_irsa = true`.
+</ResponseField>
+
+<ResponseField name="cluster_tls_certificate_sha1_fingerprint" type="string">
+  The SHA1 fingerprint of the public key of the cluster's certificate.
+</ResponseField>
+
+---
+
+## KMS
+
+<ResponseField name="kms_key_arn" type="string">
+  The Amazon Resource Name (ARN) of the key.
+</ResponseField>
+
+<ResponseField name="kms_key_id" type="string">
+  The globally unique identifier for the key.
+</ResponseField>
+
+<ResponseField name="kms_key_policy" type="string">
+  The IAM resource policy set on the key.
+</ResponseField>
+
+---
+
+## CloudWatch
+
+<ResponseField name="cloudwatch_log_group_name" type="string">
+  Name of cloudwatch log group created.
+</ResponseField>
+
+<ResponseField name="cloudwatch_log_group_arn" type="string">
+  ARN of cloudwatch log group created.
+</ResponseField>
+
+---
+
+## Node Groups
+
+<ResponseField name="eks_managed_node_groups" type="map">
+  Map of attribute maps for all EKS managed node groups created.
+</ResponseField>
+
+<ResponseField name="eks_managed_node_groups_autoscaling_group_names" type="list(string)">
+  List of the autoscaling group names created by EKS managed node groups.
+</ResponseField>
+
+<ResponseField name="self_managed_node_groups" type="map">
+  Map of attribute maps for all self managed node groups created.
+</ResponseField>
+
+<ResponseField name="self_managed_node_groups_autoscaling_group_names" type="list(string)">
+  List of the autoscaling group names created by self-managed node groups.
+</ResponseField>
+
+<ResponseField name="fargate_profiles" type="map">
+  Map of attribute maps for all EKS Fargate Profiles created.
+</ResponseField>
+
+---
+
+## Addons
+
+<ResponseField name="cluster_addons" type="map">
+  Map of attribute maps for all EKS cluster addons enabled.
+</ResponseField>
+
+<ResponseField name="cluster_identity_providers" type="map">
+  Map of attribute maps for all EKS identity providers enabled.
+</ResponseField>
+
+---
+
+## Access
+
+<ResponseField name="access_entries" type="map">
+  Map of access entries created and their attributes.
+</ResponseField>
+
+<ResponseField name="access_policy_associations" type="map">
+  Map of eks cluster access policy associations created and their attributes.
+</ResponseField>

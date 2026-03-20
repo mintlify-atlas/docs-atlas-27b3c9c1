@@ -1,0 +1,252 @@
+---
+title: User Data & Bootstrapping
+description: Configure node bootstrapping across AL2023, Bottlerocket, and Windows AMI types using pre/post hooks, nodeadm, and custom templates.
+---
+
+EKS nodes need to be bootstrapped when they launch so they join the cluster and register with the control plane. The mechanism differs by AMI type. This module provides pre-built templates for each supported type and exposes hooks for customization.
+
+## How User Data Works by Node Group Type
+
+<CardGroup cols={2}>
+  <Card title="EKS Managed Node Groups" icon="layer-group">
+    By default the EKS service appends its own bootstrap user data. Any user-supplied data is **pre-pended** before it. If a custom `ami_id` is provided, the service no longer supplies bootstrap data — you must enable `enable_bootstrap_user_data = true` or provide your own template.
+  </Card>
+  <Card title="Self Managed Node Groups" icon="server">
+    You are responsible for all bootstrapping. The module provides templates per AMI type that you opt into with `enable_bootstrap_user_data = true`, or you can supply your own template via `user_data_template_path`.
+  </Card>
+</CardGroup>
+
+---
+
+## AL2023 (nodeadm / NodeConfig Format)
+
+AL2023 uses the `nodeadm` bootstrapper with a MIME multipart cloud-init format. The key hook variables are `cloudinit_pre_nodeadm` and `cloudinit_post_nodeadm`.
+
+### Pre-nodeadm Cloud-Init Parts
+
+Use `cloudinit_pre_nodeadm` to inject additional MIME parts **before** the nodeadm configuration part runs. Each entry becomes a separate part in the multipart document.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  eks_managed_node_groups = {
+    al2023 = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["m5.xlarge"]
+
+      cloudinit_pre_nodeadm = [
+        {
+          content_type = "application/node.eks.aws"
+          content      = <<-EOT
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              instance:
+                localStorage:
+                  strategy: RAID0
+          EOT
+        }
+      ]
+    }
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+### Post-nodeadm Cloud-Init Parts
+
+Use `cloudinit_post_nodeadm` to inject MIME parts **after** the nodeadm configuration, for example to run a shell script after the node has joined the cluster.
+
+```hcl
+eks_managed_node_groups = {
+  al2023 = {
+    ami_type = "AL2023_x86_64_STANDARD"
+
+    cloudinit_post_nodeadm = [
+      {
+        content_type = "text/x-shellscript"
+        content      = <<-EOT
+          #!/bin/bash
+          echo "Node bootstrapping complete" >> /var/log/nodeadm-post.log
+        EOT
+      }
+    ]
+  }
+}
+```
+
+### NodeConfig Object Reference
+
+The `application/node.eks.aws` content type accepts a `NodeConfig` manifest. This is the canonical format for configuring nodeadm on AL2023:
+
+```hcl
+cloudinit_pre_nodeadm = [
+  {
+    content_type = "application/node.eks.aws"
+    content      = <<-EOT
+      ---
+      apiVersion: node.eks.aws/v1alpha1
+      kind: NodeConfig
+      spec:
+        kubelet:
+          config:
+            maxPods: 110
+          flags:
+            - --node-labels=node.kubernetes.io/lifecycle=spot
+        instance:
+          localStorage:
+            strategy: RAID0
+    EOT
+  }
+]
+```
+
+---
+
+## AL2 (Legacy Bash Bootstrap)
+
+For `AL2_*` AMI types, user data is a bash script. Use `pre_bootstrap_user_data`, `bootstrap_extra_args`, and `post_bootstrap_user_data` to hook into the bootstrap process.
+
+```hcl
+eks_managed_node_groups = {
+  al2 = {
+    ami_type = "AL2_x86_64"
+
+    # Runs before the EKS bootstrap script
+    pre_bootstrap_user_data = <<-EOT
+      #!/bin/bash
+      yum install -y amazon-ssm-agent
+      systemctl enable amazon-ssm-agent --now
+    EOT
+
+    # Extra arguments passed to the bootstrap.sh script
+    bootstrap_extra_args = "--kubelet-extra-args '--node-labels=node.kubernetes.io/lifecycle=spot'"
+
+    # Runs after the EKS bootstrap script
+    post_bootstrap_user_data = <<-EOT
+      #!/bin/bash
+      echo "Bootstrap complete" >> /var/log/eks-post-bootstrap.log
+    EOT
+  }
+}
+```
+
+<Note>
+`bootstrap_extra_args` for AL2 AMIs are arguments passed directly to the [AWS EKS Optimized AMI bootstrap script](https://github.com/awslabs/amazon-eks-ami/blob/master/files/bootstrap.sh). Common uses include `--kubelet-extra-args`, `--b64-cluster-ca`, and `--apiserver-endpoint`.
+</Note>
+
+---
+
+## Custom AMI with Bootstrap User Data
+
+When you specify a custom `ami_id` for an EKS managed node group, the EKS service no longer injects bootstrap data. You have two options:
+
+### Option 1: Use the Module-Provided Template
+
+Opt in to the module's built-in bootstrap template for EKS-optimized AMI derivatives:
+
+```hcl
+eks_managed_node_groups = {
+  custom_ami = {
+    ami_id = "ami-0123456789abcdef0"  # custom EKS-optimized derivative
+
+    enable_bootstrap_user_data = true  # use module-provided template
+
+    pre_bootstrap_user_data  = "..."
+    bootstrap_extra_args     = "..."
+    post_bootstrap_user_data = "..."
+  }
+}
+```
+
+### Option 2: Bring Your Own Template
+
+For non-EKS-optimized AMIs or when you need full control over user data:
+
+```hcl
+eks_managed_node_groups = {
+  custom_ami = {
+    ami_id = "ami-0123456789abcdef0"
+
+    # Path to your own user data template (rendered via templatefile())
+    user_data_template_path  = "./templates/my_userdata.sh"
+    pre_bootstrap_user_data  = "..."
+    bootstrap_extra_args     = "..."
+    post_bootstrap_user_data = "..."
+  }
+}
+```
+
+<Note>
+Only the variables that the module passes to `templatefile()` for the respective AMI type are available in your custom template. If you need additional values, pre-render the template before passing it to the module.
+</Note>
+
+---
+
+## Bottlerocket (TOML Format)
+
+For `BOTTLEROCKET_*` AMI types, user data must be in TOML format. When used with EKS managed node groups, the supplied TOML is **merged** with the configuration provided by the EKS service — there is no concept of pre/post bootstrap. Use `bootstrap_extra_args` to supply additional Bottlerocket settings.
+
+```hcl
+eks_managed_node_groups = {
+  bottlerocket = {
+    ami_type = "BOTTLEROCKET_x86_64"
+
+    # TOML configuration merged with EKS-provided settings
+    bootstrap_extra_args = <<-EOT
+      [settings.kernel]
+      lockdown = "integrity"
+
+      [settings.kubernetes]
+      node-labels = { "node.kubernetes.io/lifecycle" = "on-demand" }
+    EOT
+  }
+}
+```
+
+<Warning>
+`pre_bootstrap_user_data` and `post_bootstrap_user_data` are **not** valid for Bottlerocket. The OS controls when settings are applied. Use `bootstrap_extra_args` for any additional TOML configuration. See the [Bottlerocket settings documentation](https://github.com/bottlerocket-os/bottlerocket#description-of-settings) for all available options.
+</Warning>
+
+---
+
+## Windows (PowerShell Format)
+
+For `WINDOWS_*` AMI types, user data is a PowerShell script.
+
+```hcl
+eks_managed_node_groups = {
+  windows = {
+    ami_type = "WINDOWS_CORE_2022_x86_64"
+
+    pre_bootstrap_user_data = <<-EOT
+      <powershell>
+      # Runs before EKS bootstrap
+      Set-ExecutionPolicy Unrestricted -Force
+      </powershell>
+    EOT
+  }
+}
+```
+
+---
+
+## Variable Reference
+
+| Variable | AMI Types | Description |
+|---|---|---|
+| `cloudinit_pre_nodeadm` | AL2023 | MIME parts injected before the nodeadm configuration part |
+| `cloudinit_post_nodeadm` | AL2023 | MIME parts injected after the nodeadm configuration part |
+| `pre_bootstrap_user_data` | AL2, Windows, Bottlerocket (not valid) | Script/data prepended before the bootstrap script |
+| `post_bootstrap_user_data` | AL2, Windows | Script/data appended after the bootstrap script |
+| `bootstrap_extra_args` | AL2 (bootstrap.sh args), Bottlerocket (TOML) | Additional arguments or settings for the bootstrap process |
+| `enable_bootstrap_user_data` | All (custom AMI) | Opt in to the module-provided bootstrap template when using a custom AMI |
+| `user_data_template_path` | All | Path to a custom template file rendered by the module in place of the default |

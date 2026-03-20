@@ -1,0 +1,273 @@
+---
+title: Karpenter
+description: Sub-module that provisions all AWS infrastructure required to run the Karpenter autoscaler on an EKS cluster, including IAM roles, an SQS interruption queue, EventBridge rules, and a Pod Identity association.
+---
+
+
+The `karpenter` sub-module creates the AWS-side resources that [Karpenter](https://karpenter.sh) requires to function. It does not install the Karpenter controller itself — that is done separately via Helm.
+
+<CardGroup cols={2}>
+  <Card title="Controller IAM Role" icon="shield-halved">
+    An IAM role scoped to the Karpenter controller, together with a Pod Identity association so the controller pod can assume it without IRSA.
+  </Card>
+  <Card title="Node IAM Role" icon="server">
+    A node IAM role (and optional instance profile) that Karpenter uses when provisioning new EC2 nodes. An EKS access entry is created so those nodes can join the cluster automatically.
+  </Card>
+  <Card title="SQS Interruption Queue" icon="bell">
+    An SQS queue that Karpenter monitors for EC2 spot interruption notices, capacity rebalancing events, and instance state-change notifications.
+  </Card>
+  <Card title="EventBridge Rules" icon="bolt">
+    EventBridge rules that route AWS-generated lifecycle events to the SQS queue, enabling Karpenter's native interruption handling.
+  </Card>
+</CardGroup>
+
+## Usage
+
+### Default — all resources
+
+Create every resource in a single call. Karpenter will get its own node IAM role and an access entry will be registered on the cluster.
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+  # ...
+}
+
+module "karpenter" {
+  source = "terraform-aws-modules/eks/aws//modules/karpenter"
+
+  cluster_name = module.eks.cluster_name
+
+  # Attach additional IAM policies to the Karpenter node IAM role
+  node_iam_role_additional_policies = {
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+### Re-use an existing node IAM role
+
+When you already have an EKS managed node group, you can point Karpenter at that group's IAM role to avoid creating a duplicate. Disable access entry creation because the node group already has one.
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  eks_managed_node_groups = {
+    initial = {
+      instance_types = ["t3.medium"]
+      min_size       = 1
+      max_size       = 3
+      desired_size   = 1
+    }
+  }
+  # ...
+}
+
+module "karpenter" {
+  source = "terraform-aws-modules/eks/aws//modules/karpenter"
+
+  cluster_name = module.eks.cluster_name
+
+  create_node_iam_role = false
+  node_iam_role_arn    = module.eks.eks_managed_node_groups["initial"].iam_role_arn
+
+  # The node group role already has an access entry
+  create_access_entry = false
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+### Full production example (with Helm install)
+
+This is taken from the `examples/karpenter` directory in the module source. It shows how all pieces fit together — the EKS cluster, Karpenter sub-module, and the Helm release.
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  name               = local.name
+  kubernetes_version = "1.33"
+
+  enable_cluster_creator_admin_permissions = true
+
+  addons = {
+    coredns                = {}
+    eks-pod-identity-agent = { before_compute = true }
+    kube-proxy             = {}
+    vpc-cni                = { before_compute = true }
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  eks_managed_node_groups = {
+    karpenter = {
+      ami_type       = "BOTTLEROCKET_x86_64"
+      instance_types = ["m5.large"]
+      min_size       = 2
+      max_size       = 3
+      desired_size   = 2
+
+      labels = {
+        # Ensure Karpenter runs on nodes it does not manage
+        "karpenter.sh/controller" = "true"
+      }
+    }
+  }
+
+  node_security_group_tags = {
+    "karpenter.sh/discovery" = local.name
+  }
+}
+
+module "karpenter" {
+  source = "terraform-aws-modules/eks/aws//modules/karpenter"
+
+  cluster_name = module.eks.cluster_name
+
+  # The role name must match what you set in Karpenter's EC2NodeClass
+  node_iam_role_use_name_prefix   = false
+  node_iam_role_name              = local.name
+  create_pod_identity_association = true
+
+  node_iam_role_additional_policies = {
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  tags = local.tags
+}
+
+resource "helm_release" "karpenter" {
+  namespace  = "kube-system"
+  name       = "karpenter"
+  repository = "oci://public.ecr.aws/karpenter"
+  chart      = "karpenter"
+  version    = "1.6.0"
+  wait       = false
+
+  values = [
+    <<-EOT
+    nodeSelector:
+      karpenter.sh/controller: 'true'
+    settings:
+      clusterName: ${module.eks.cluster_name}
+      clusterEndpoint: ${module.eks.cluster_endpoint}
+      interruptionQueue: ${module.karpenter.queue_name}
+    EOT
+  ]
+}
+```
+
+<Note>
+  The `eks-pod-identity-agent` addon must be installed (`before_compute = true`) for the Pod Identity association to work. Without it the Karpenter controller pod cannot assume its IAM role.
+</Note>
+
+## Key inputs
+
+<ParamField path="cluster_name" type="string" required>
+  The name of the EKS cluster. Used to scope IAM policy conditions and name SQS/EventBridge resources.
+</ParamField>
+
+<ParamField path="create_node_iam_role" type="bool" default="true">
+  Create a dedicated node IAM role. Set to `false` when re-using an existing role (e.g. from an EKS managed node group).
+</ParamField>
+
+<ParamField path="node_iam_role_arn" type="string">
+  ARN of an existing node IAM role. Required when `create_node_iam_role = false`.
+</ParamField>
+
+<ParamField path="node_iam_role_additional_policies" type="map(string)" default="{}">
+  Additional managed policies to attach to the node IAM role. A common addition is `AmazonSSMManagedInstanceCore` to enable SSM Session Manager access to Karpenter nodes.
+</ParamField>
+
+<ParamField path="create_access_entry" type="bool" default="true">
+  Register an EKS access entry for the node IAM role so that Karpenter-provisioned nodes can join the cluster. Set to `false` when the role already has an access entry (e.g. shared with a managed node group).
+</ParamField>
+
+<ParamField path="create_pod_identity_association" type="bool" default="true">
+  Create an EKS Pod Identity association that links the Karpenter service account to the controller IAM role.
+</ParamField>
+
+<ParamField path="namespace" type="string" default="kube-system">
+  Kubernetes namespace for the Karpenter Pod Identity association.
+</ParamField>
+
+<ParamField path="service_account" type="string" default="karpenter">
+  Kubernetes service account name for the Karpenter Pod Identity association.
+</ParamField>
+
+<ParamField path="enable_spot_termination" type="bool" default="true">
+  Create the SQS queue and EventBridge rules for native spot interruption and capacity rebalancing handling.
+</ParamField>
+
+<ParamField path="queue_name" type="string">
+  Override the auto-generated SQS queue name. Defaults to the cluster name.
+</ParamField>
+
+<ParamField path="node_iam_role_use_name_prefix" type="bool" default="true">
+  Use `node_iam_role_name` as a name prefix. Set to `false` when the Karpenter `EC2NodeClass` references the role by its exact name.
+</ParamField>
+
+<ParamField path="tags" type="map(string)" default="{}">
+  Tags applied to all resources created by this module.
+</ParamField>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `iam_role_arn` | ARN of the Karpenter **controller** IAM role |
+| `iam_role_name` | Name of the Karpenter controller IAM role |
+| `node_iam_role_arn` | ARN of the node IAM role used by Karpenter-provisioned instances |
+| `node_iam_role_name` | Name of the node IAM role |
+| `queue_name` | Name of the SQS interruption queue — pass to `settings.interruptionQueue` in the Helm values |
+| `queue_arn` | ARN of the SQS interruption queue |
+| `queue_url` | URL of the SQS interruption queue |
+| `instance_profile_arn` | ARN of the IAM instance profile (only populated when `create_instance_profile = true`) |
+| `node_access_entry_arn` | ARN of the EKS access entry created for the node IAM role |
+| `event_rules` | Map of EventBridge rule attributes |
+| `namespace` | Namespace associated with the Pod Identity |
+| `service_account` | Service account associated with the Pod Identity |
+
+## Resources created
+
+<Accordion title="IAM (controller)">
+
+- `aws_iam_role.controller` — controller IAM role with Pod Identity trust policy
+- `aws_iam_policy.controller` — scoped Karpenter controller policy (EC2, SQS, SSM, etc.)
+- `aws_iam_role_policy_attachment.controller` — attaches the policy to the role
+- `aws_eks_pod_identity_association.karpenter` — links the Karpenter service account to the controller role
+
+</Accordion>
+
+<Accordion title="IAM (node)">
+
+- `aws_iam_role.node` — node IAM role (EC2 trust policy)
+- `aws_iam_role_policy_attachment.node` — attaches `AmazonEKSWorkerNodePolicy`, `AmazonEC2ContainerRegistryReadOnly`, and optionally the CNI policy
+- `aws_iam_instance_profile.this` — instance profile (created when `create_instance_profile = true`)
+- `aws_eks_access_entry.node` — EKS access entry of type `EC2_LINUX`
+
+</Accordion>
+
+<Accordion title="Interruption handling">
+
+- `aws_sqs_queue.this` — SQS queue for interruption events
+- `aws_sqs_queue_policy.this` — queue resource policy allowing EventBridge to send messages
+- `aws_cloudwatch_event_rule.this` — EventBridge rules for spot interruption, capacity rebalancing, instance state changes, and scheduled changes
+- `aws_cloudwatch_event_target.this` — routes each rule to the SQS queue
+
+</Accordion>
+
+<Warning>
+  If you set `create_node_iam_role = false` and `create_access_entry = false`, you are responsible for ensuring the provided `node_iam_role_arn` already has a valid `EC2_LINUX` access entry on the cluster. Karpenter nodes will not be able to join without it.
+</Warning>

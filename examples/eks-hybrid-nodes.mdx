@@ -1,0 +1,371 @@
+---
+title: EKS Hybrid Nodes
+description: Connect on-premises or other-cloud VMs as worker nodes in an EKS cluster using EKS Hybrid Nodes.
+---
+
+EKS Hybrid Nodes lets you attach Linux machines running outside of AWS — such as on-premises bare-metal servers or VMs in another cloud — to an EKS cluster. The remote nodes register via either AWS Systems Manager (SSM) or IAM Roles Anywhere. AWS manages the Kubernetes control plane while you retain ownership of the physical or virtual infrastructure.
+
+This example deploys an EKS cluster configured to accept hybrid nodes. It uses the `modules/hybrid-node-role` sub-module to create the IAM role that remote nodes assume when they join the cluster, and configures `remote_network_config` to tell EKS the CIDR ranges used by the remote nodes and pods.
+
+## Prerequisites
+
+- AWS credentials with permissions to create EKS, IAM, VPC, and SSM resources
+- Terraform >= 1.5.7
+- AWS provider >= 6.28
+- Helm provider (example installs Cilium CNI on hybrid nodes)
+- Remote nodes running a [supported Linux distribution](https://docs.aws.amazon.com/eks/latest/userguide/hybrid-nodes-os.html) with `nodeadm` installed
+- Network connectivity (VPN, Direct Connect, or VPC peering) between your cluster VPC and the remote node network
+
+<Warning>
+  AWS EC2 instances are **not** supported as EKS Hybrid nodes. The example uses EC2 only to simulate a remote environment for demonstration purposes. In production, hybrid nodes must be on-premises or in another cloud provider.
+</Warning>
+
+## Example code
+
+### EKS cluster (`main.tf`)
+
+The following is the complete `main.tf` from [`examples/eks-hybrid-nodes`](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/eks-hybrid-nodes).
+
+```hcl
+provider "aws" {
+  region = local.region
+}
+
+provider "helm" {
+  kubernetes = {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec = {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      # This requires the awscli to be installed locally where Terraform is executed
+      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
+locals {
+  name   = "ex-${basename(path.cwd)}"
+  region = "us-west-2"
+
+  kubernetes_version = "1.33"
+
+  tags = {
+    Test       = local.name
+    GithubRepo = "terraform-aws-eks"
+    GithubOrg  = "terraform-aws-modules"
+  }
+}
+
+################################################################################
+# EKS Cluster
+################################################################################
+
+module "eks" {
+  source = "../.."  # use "terraform-aws-modules/eks/aws" version "~> 21.0" from registry
+
+  name               = local.name
+  kubernetes_version = local.kubernetes_version
+
+  endpoint_public_access                   = true
+  enable_cluster_creator_admin_permissions = true
+
+  addons = {
+    coredns                = {}
+    eks-pod-identity-agent = {}
+    kube-proxy             = {}
+  }
+
+  create_node_security_group = false
+  security_group_additional_rules = {
+    hybrid-all = {
+      cidr_blocks = [local.remote_network_cidr]
+      description = "Allow all traffic from remote node/pod network"
+      from_port   = 0
+      to_port     = 0
+      protocol    = "all"
+      type        = "ingress"
+    }
+  }
+
+  compute_config = {
+    enabled    = true
+    node_pools = ["system"]
+  }
+
+  access_entries = {
+    hybrid-node-role = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  remote_network_config = {
+    remote_node_networks = {
+      cidrs = [local.remote_node_cidr]
+    }
+    remote_pod_networks = {
+      cidrs = [local.remote_pod_cidr]
+    }
+  }
+
+  tags = local.tags
+}
+
+################################################################################
+# VPC
+################################################################################
+
+locals {
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+}
+
+data "aws_availability_zones" "available" {
+  # Exclude local zones
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 52)]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+
+  tags = local.tags
+}
+
+################################################################################
+# VPC Peering Connection
+################################################################################
+
+resource "aws_vpc_peering_connection_accepter" "peer" {
+  vpc_peering_connection_id = aws_vpc_peering_connection.remote_node.id
+  auto_accept               = true
+
+  tags = local.tags
+}
+
+resource "aws_route" "peer" {
+  route_table_id            = one(module.vpc.private_route_table_ids)
+  destination_cidr_block    = local.remote_network_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.remote_node.id
+}
+```
+
+### Hybrid node role and remote resources (`remote.tf`)
+
+The `modules/hybrid-node-role` sub-module creates the IAM role that remote nodes assume during registration. The example also creates SSM activation resources and (for demonstration only) EC2 instances that simulate remote nodes.
+
+```hcl
+provider "aws" {
+  alias  = "remote"
+  region = "us-east-1"
+}
+
+################################################################################
+# Hybrid Node IAM Module
+################################################################################
+
+module "eks_hybrid_node_role" {
+  source = "../../modules/hybrid-node-role"  # use "terraform-aws-modules/eks/aws//modules/hybrid-node-role" from registry
+
+  tags = local.tags
+}
+
+################################################################################
+# SSM Activation
+# Allows remote nodes to register with SSM and join the EKS cluster
+################################################################################
+
+resource "aws_ssm_activation" "this" {
+  name               = "hybrid-node"
+  iam_role           = module.eks_hybrid_node_role.name
+  registration_limit = 10
+
+  tags = local.tags
+}
+
+################################################################################
+# Remote Network CIDRs
+################################################################################
+
+locals {
+  remote_network_cidr = "172.16.0.0/16"
+  remote_node_cidr    = cidrsubnet(local.remote_network_cidr, 2, 0)  # 172.16.0.0/18
+  remote_pod_cidr     = cidrsubnet(local.remote_network_cidr, 2, 1)  # 172.16.64.0/18
+}
+
+################################################################################
+# Cilium CNI (for hybrid nodes)
+################################################################################
+
+resource "helm_release" "cilium" {
+  name       = "cilium"
+  repository = "https://helm.cilium.io/"
+  chart      = "cilium"
+  version    = "1.16.4"
+  namespace  = "kube-system"
+  wait       = false
+
+  values = [
+    <<-EOT
+      nodeSelector:
+        eks.amazonaws.com/compute-type: hybrid
+      ipam:
+        mode: cluster-pool
+        operator:
+          clusterPoolIPv4MaskSize: 26
+          clusterPoolIPv4PodCIDRList:
+            - ${local.remote_pod_cidr}
+      operator:
+        unmanagedPodWatcher:
+          restart: false
+    EOT
+  ]
+}
+```
+
+## Key concepts
+
+### `remote_network_config`
+
+This block tells EKS the IP ranges used by remote nodes and pods. EKS uses this information to route traffic correctly between the control plane, cloud nodes, and hybrid nodes.
+
+```hcl
+remote_network_config = {
+  remote_node_networks = {
+    cidrs = ["172.16.0.0/18"]   # IPs assigned to hybrid node VMs
+  }
+  remote_pod_networks = {
+    cidrs = ["172.16.64.0/18"]  # IPs assigned to pods on hybrid nodes
+                                 # Required if running webhooks on hybrid nodes
+  }
+}
+```
+
+Only RFC 1918 address space is supported (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+
+### `HYBRID_LINUX` access entry
+
+Hybrid nodes use a special access entry type of `HYBRID_LINUX` instead of the default `STANDARD`. This grants the hybrid node IAM role the permissions needed to join and operate within the cluster:
+
+```hcl
+access_entries = {
+  hybrid-node-role = {
+    principal_arn = module.eks_hybrid_node_role.arn
+    type          = "HYBRID_LINUX"
+  }
+}
+```
+
+### `create_node_security_group = false`
+
+Hybrid nodes cannot use the module-managed node security group because they are not EC2 instances in your VPC. Setting `create_node_security_group = false` and adding an ingress rule for the remote network CIDR on the cluster security group allows bidirectional traffic.
+
+### EKS Auto Mode `system` node pool
+
+The example enables EKS Auto Mode with the `system` node pool to run system components (CoreDNS, etc.) on cloud nodes, while hybrid nodes handle application workloads.
+
+### Joining a node with `nodeadm`
+
+Once the SSM activation is created, nodes join the cluster by running `nodeadm` with a configuration file:
+
+```yaml
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: <cluster-name>
+    region: us-west-2
+  hybrid:
+    ssm:
+      activationCode: <activation-code>
+      activationId: <activation-id>
+```
+
+```bash
+sudo nodeadm init -c file://nodeConfig.yaml
+sudo systemctl daemon-reload
+```
+
+## Deploy
+
+<Steps>
+  <Step title="Initialize Terraform">
+    ```bash
+    terraform init
+    ```
+  </Step>
+
+  <Step title="Review the plan">
+    ```bash
+    terraform plan
+    ```
+  </Step>
+
+  <Step title="Apply">
+    ```bash
+    terraform apply
+    ```
+  </Step>
+
+  <Step title="Configure kubectl">
+    ```bash
+    aws eks update-kubeconfig --region us-west-2 --name ex-eks-hybrid-nodes
+    ```
+  </Step>
+
+  <Step title="Join remote nodes">
+    Copy the generated `join.sh` script to each remote node and execute it, or manually run `nodeadm init` with the SSM activation credentials from the Terraform output.
+
+    ```bash
+    bash join.sh
+    ```
+  </Step>
+
+  <Step title="Verify hybrid nodes are ready">
+    Hybrid nodes appear with the label `eks.amazonaws.com/compute-type=hybrid`.
+
+    ```bash
+    kubectl get nodes -l eks.amazonaws.com/compute-type=hybrid
+    ```
+  </Step>
+</Steps>
+
+## Key outputs
+
+| Output | Description |
+|---|---|
+| `cluster_name` | Name of the EKS cluster |
+| `cluster_endpoint` | Kubernetes API server endpoint |
+| `cluster_certificate_authority_data` | CA data needed for `nodeadm` configuration |
+| `eks_hybrid_node_role.arn` | ARN of the IAM role for hybrid nodes |
+
+## Full example on GitHub
+
+[View the complete example](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/eks-hybrid-nodes) including the AMI build scripts in the `ami/` directory, VPC peering setup, and the full `remote.tf` with simulated hybrid nodes.

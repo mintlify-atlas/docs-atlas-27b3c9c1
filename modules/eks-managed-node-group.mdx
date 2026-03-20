@@ -1,0 +1,254 @@
+---
+title: EKS Managed Node Group
+description: Sub-module that creates an EKS managed node group along with an IAM role, security group, and launch template. Can be used standalone or is called internally by the root module via the eks_managed_node_groups variable.
+---
+
+
+The `eks-managed-node-group` sub-module provisions an `aws_eks_node_group` resource plus the supporting IAM role, security group, and EC2 launch template. By default it creates a fully customized launch template (enabling custom security groups, tag propagation, and metadata options), but can fall back to the EKS-managed default template when `use_custom_launch_template = false`.
+
+## Standalone vs. root module usage
+
+<Tabs>
+  <Tab title="Via root module (recommended)">
+
+The most common pattern is to declare node groups inside the root `eks` module using the `eks_managed_node_groups` variable. The root module calls this sub-module internally for each entry.
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+  vpc_id             = module.vpc.vpc_id
+  subnet_ids         = module.vpc.private_subnets
+
+  eks_managed_node_groups = {
+    general = {
+      instance_types = ["m6i.large"]
+      min_size       = 2
+      max_size       = 10
+      desired_size   = 2
+    }
+
+    spot = {
+      instance_types = ["m6i.large", "m6a.large", "m5.large"]
+      capacity_type  = "SPOT"
+      min_size       = 1
+      max_size       = 5
+      desired_size   = 1
+    }
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Standalone">
+
+Call the sub-module directly to create a node group outside the root module context. You must supply the cluster's security group IDs so nodes can communicate with the control plane.
+
+```hcl
+module "eks_managed_node_group" {
+  source = "terraform-aws-modules/eks/aws//modules/eks-managed-node-group"
+
+  name         = "separate-eks-mng"
+  cluster_name = "my-cluster"
+
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  # Required when using outside the parent EKS module context
+  # so that nodes can communicate with the control plane
+  cluster_primary_security_group_id = module.eks.cluster_primary_security_group_id
+  vpc_security_group_ids            = [module.eks.node_security_group_id]
+
+  min_size     = 1
+  max_size     = 10
+  desired_size = 1
+
+  instance_types = ["t3.large"]
+  capacity_type  = "SPOT"
+
+  labels = {
+    Environment = "test"
+  }
+
+  taints = {
+    dedicated = {
+      key    = "dedicated"
+      value  = "gpuGroup"
+      effect = "NO_SCHEDULE"
+    }
+  }
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+<Warning>
+  When calling the sub-module standalone (outside the root `eks` module), you **must** pass `cluster_primary_security_group_id` and `vpc_security_group_ids`. Without them the node security group will be empty and nodes will not be able to join the cluster.
+</Warning>
+
+## Key inputs
+
+### Node group sizing
+
+<ParamField path="min_size" type="number" default="1">
+  Minimum number of nodes in the node group.
+</ParamField>
+
+<ParamField path="max_size" type="number" default="3">
+  Maximum number of nodes in the node group.
+</ParamField>
+
+<ParamField path="desired_size" type="number" default="1">
+  Desired number of nodes. The EKS node group will attempt to maintain this count.
+</ParamField>
+
+<ParamField path="instance_types" type="list(string)">
+  EC2 instance types for the node group. When multiple types are provided, EKS selects from the list. Defaults to `["t3.medium"]`.
+</ParamField>
+
+<ParamField path="capacity_type" type="string" default="ON_DEMAND">
+  Purchasing option. Valid values: `ON_DEMAND`, `SPOT`.
+</ParamField>
+
+<ParamField path="subnet_ids" type="list(string)">
+  Subnet IDs for the node group. Subnets must have the `kubernetes.io/cluster/CLUSTER_NAME` tag.
+</ParamField>
+
+### AMI configuration
+
+<ParamField path="ami_type" type="string" default="AL2023_x86_64_STANDARD">
+  AMI family for the node group. Common values: `AL2023_x86_64_STANDARD`, `AL2023_ARM_64_STANDARD`, `BOTTLEROCKET_x86_64`, `BOTTLEROCKET_ARM_64`, `WINDOWS_CORE_2022_x86_64`.
+</ParamField>
+
+<ParamField path="ami_id" type="string">
+  Custom AMI ID. When set, `enable_bootstrap_user_data` must be `true` to inject the cluster bootstrap configuration.
+</ParamField>
+
+<ParamField path="ami_release_version" type="string">
+  Specific AMI release version to pin. Defaults to the latest version for the given `ami_type` and Kubernetes version.
+</ParamField>
+
+<ParamField path="kubernetes_version" type="string">
+  Kubernetes version for the node group. Defaults to the EKS cluster version.
+</ParamField>
+
+### Launch template
+
+<ParamField path="create_launch_template" type="bool" default="true">
+  Create a custom EC2 launch template. When `false`, EKS uses its own default launch template.
+</ParamField>
+
+<ParamField path="use_custom_launch_template" type="bool" default="true">
+  Use the custom launch template. Set to `false` to use the EKS default template, which enables `disk_size` and `remote_access` options (incompatible with a custom template).
+</ParamField>
+
+<ParamField path="block_device_mappings" type="map(object({...}))">
+  EBS volume configuration for the root and any additional volumes. Supports `volume_size`, `volume_type`, `encrypted`, `kms_key_id`, `iops`, `throughput`, and more.
+</ParamField>
+
+<ParamField path="metadata_options" type="object({...})">
+  IMDSv2 settings. Defaults to `http_tokens = "required"` (IMDSv2 enforced) with a hop limit of `1`.
+</ParamField>
+
+<ParamField path="enable_monitoring" type="bool" default="false">
+  Enable detailed EC2 instance monitoring (1-minute CloudWatch metrics).
+</ParamField>
+
+<ParamField path="enable_efa_support" type="bool" default="false">
+  Enable Elastic Fabric Adapter (EFA) network interfaces. Required for HPC and GPU workloads that need high-bandwidth, low-latency networking.
+</ParamField>
+
+### Node bootstrapping
+
+<ParamField path="enable_bootstrap_user_data" type="bool" default="false">
+  Inject EKS bootstrap configuration into user data. Only required when using a custom AMI via `ami_id`.
+</ParamField>
+
+<ParamField path="pre_bootstrap_user_data" type="string">
+  Shell script to run before the EKS bootstrap script. Not used with Bottlerocket AMIs.
+</ParamField>
+
+<ParamField path="post_bootstrap_user_data" type="string">
+  Shell script to run after the EKS bootstrap script. Not used with Bottlerocket AMIs.
+</ParamField>
+
+<ParamField path="bootstrap_extra_args" type="string">
+  Additional arguments passed to the bootstrap script. For Bottlerocket, these are additional TOML settings for the user data.
+</ParamField>
+
+### IAM role
+
+<ParamField path="create_iam_role" type="bool" default="true">
+  Create a new IAM role for the node group. Set to `false` to provide an existing role via `iam_role_arn`.
+</ParamField>
+
+<ParamField path="iam_role_arn" type="string">
+  ARN of an existing IAM role. Required when `create_iam_role = false`.
+</ParamField>
+
+<ParamField path="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional managed policies to attach to the node IAM role.
+</ParamField>
+
+<ParamField path="iam_role_attach_cni_policy" type="bool" default="true">
+  Attach `AmazonEKS_CNI_Policy` (IPv4) or `AmazonEKS_CNI_IPv6_Policy` (IPv6) to the node role. Only disable if you assign CNI permissions to the `aws-node` DaemonSet via another method.
+</ParamField>
+
+### Kubernetes
+
+<ParamField path="labels" type="map(string)">
+  Kubernetes node labels managed by the EKS API.
+</ParamField>
+
+<ParamField path="taints" type="map(object({key, value, effect}))">
+  Kubernetes taints to apply to nodes. Maximum 50 taints per node group.
+</ParamField>
+
+<ParamField path="update_config" type="object({...})">
+  Rolling update settings. Defaults to `max_unavailable_percentage = 33`.
+</ParamField>
+
+<ParamField path="node_repair_config" type="object({...})">
+  Automatic node repair settings. When enabled, EKS will automatically replace unhealthy nodes.
+</ParamField>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `node_group_arn` | ARN of the EKS node group |
+| `node_group_id` | Cluster name and node group name joined by `:` |
+| `node_group_status` | Current status of the node group |
+| `node_group_autoscaling_group_names` | Names of the underlying Auto Scaling Groups |
+| `node_group_labels` | Labels applied to the node group |
+| `node_group_taints` | Taints applied to the node group |
+| `iam_role_arn` | ARN of the node IAM role |
+| `iam_role_name` | Name of the node IAM role |
+| `launch_template_id` | ID of the EC2 launch template |
+| `launch_template_arn` | ARN of the EC2 launch template |
+| `launch_template_name` | Name of the EC2 launch template |
+| `launch_template_latest_version` | Latest version number of the launch template |
+| `security_group_id` | ID of the node security group |
+| `security_group_arn` | ARN of the node security group |
+
+## Resources created
+
+- `aws_eks_node_group.this` — the EKS managed node group
+- `aws_launch_template.this` — EC2 launch template
+- `aws_iam_role.this` — node IAM role
+- `aws_iam_role_policy.this` — optional inline IAM policy
+- `aws_iam_role_policy_attachment.this` — standard node group policies
+- `aws_security_group.this` — node security group
+- `aws_vpc_security_group_ingress_rule.this` / `aws_vpc_security_group_egress_rule.this` — security group rules
+- `aws_placement_group.this` — EC2 placement group (when `create_placement_group = true`)
+
+<Tip>
+  The node group reads the latest AMI SSM parameter automatically. You can pin to a specific version with `ami_release_version` or disable auto-updates by setting `use_latest_ami_release_version = false`.
+</Tip>

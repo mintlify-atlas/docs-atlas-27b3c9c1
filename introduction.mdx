@@ -1,0 +1,88 @@
+---
+title: Introduction
+description: An overview of the terraform-aws-eks module, the AWS resources it manages, and the provider requirements needed to get started.
+---
+
+## What is terraform-aws-eks?
+
+`terraform-aws-eks` is a Terraform module that creates and manages Amazon EKS (Elastic Kubernetes Service) resources on AWS. Rather than writing dozens of individual resource blocks yourself, you call this module with a handful of variables and it provisions a production-ready EKS cluster along with all the supporting infrastructure it depends on.
+
+The module is maintained by the [terraform-aws-modules](https://github.com/terraform-aws-modules) community and published on the Terraform Registry at `terraform-aws-modules/eks/aws`.
+
+## Why use this module?
+
+Provisioning EKS from scratch requires coordinating many AWS resource types — IAM roles and policies, security groups, KMS keys, CloudWatch log groups, OIDC providers, access entries, and the cluster itself. Getting the dependencies between these resources correct, and keeping them up to date as EKS evolves, is time-consuming and error-prone.
+
+This module solves that by:
+
+- Encoding the correct resource relationships and dependency ordering so you don't have to.
+- Providing sensible, secure defaults (private endpoint enabled, KMS encryption for secrets, IRSA enabled, control-plane audit/api/authenticator logs on by default) while still letting you override everything.
+- Supporting all three EKS compute models — EKS Auto Mode, EKS managed node groups, and self-managed node groups — from a single, consistent interface.
+- Handling cluster access management (access entries) so you don't need to manage `aws-auth` ConfigMap manually.
+
+## Architecture overview
+
+When you invoke the module, it creates and manages the following AWS resources:
+
+| Resource | Purpose |
+|---|---|
+| `aws_eks_cluster` | The EKS control plane |
+| `aws_iam_role` | Cluster IAM service role |
+| `aws_iam_role` (node) | EKS Auto Mode node IAM role |
+| `aws_iam_policy` | Cluster encryption policy, CNI IPv6 policy, custom policies |
+| `aws_iam_role_policy_attachment` | Attaches managed and custom policies to the cluster and node roles |
+| `aws_iam_openid_connect_provider` | OIDC provider for IAM Roles for Service Accounts (IRSA) |
+| `aws_security_group` | Cluster security group and node shared security group |
+| `aws_security_group_rule` | Rules for cluster and node security groups |
+| `aws_ec2_tag` | Tags on the EKS-managed primary security group |
+| `aws_eks_access_entry` | Cluster access entries (replaces `aws-auth` ConfigMap) |
+| `aws_eks_access_policy_association` | Associates IAM policies with access entries |
+| `aws_eks_addon` | EKS add-ons (e.g., `coredns`, `vpc-cni`, `kube-proxy`) |
+| `aws_eks_identity_provider_config` | External OIDC identity provider configurations |
+| `aws_cloudwatch_log_group` | Log group for EKS control-plane logs |
+| KMS key (via `terraform-aws-modules/kms/aws`) | Encrypts Kubernetes secrets at rest |
+| `time_sleep` | Waits for the control plane to become ready before creating node groups |
+
+The module also wraps three sub-modules for compute:
+
+| Sub-module | What it manages |
+|---|---|
+| `modules/eks-managed-node-group` | EKS managed node groups |
+| `modules/self-managed-node-group` | Self-managed node groups (Auto Scaling Groups) |
+| `modules/fargate-profile` | Fargate profiles |
+
+## Provider and Terraform requirements
+
+The module requires the following versions, as defined in `versions.tf`:
+
+| Dependency | Required version |
+|---|---|
+| Terraform | `>= 1.5.7` |
+| AWS provider (`hashicorp/aws`) | `>= 6.28` |
+| TLS provider (`hashicorp/tls`) | `>= 4.0` |
+| Time provider (`hashicorp/time`) | `>= 0.9` |
+
+The TLS and Time providers are declared automatically by the module — you only need to configure the AWS provider in your root module.
+
+```hcl
+provider "aws" {
+  region = "us-west-2"
+}
+```
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Deploy your first EKS cluster with EKS Auto Mode in minutes.
+  </Card>
+  <Card title="EKS Auto Mode" icon="bolt" href="/compute/eks-auto-mode">
+    Let AWS manage node lifecycle automatically with built-in node pools.
+  </Card>
+  <Card title="EKS managed node groups" icon="server" href="/compute/eks-managed-node-groups">
+    Provision EC2 worker nodes managed by the EKS service.
+  </Card>
+  <Card title="Cluster access" icon="key" href="/configuration/access-entries">
+    Manage Kubernetes API access using EKS access entries.
+  </Card>
+</Columns>

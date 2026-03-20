@@ -1,0 +1,525 @@
+---
+title: EKS Managed Node Group
+description: Input variables and outputs for the eks-managed-node-group sub-module.
+---
+
+The `eks-managed-node-group` sub-module manages [EKS managed node groups](https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html). It is invoked for each entry in the `eks_managed_node_groups` map on the root module.
+
+## Inputs
+
+### General
+
+<ParamField name="create" type="bool" default="true">
+  Determines whether to create EKS managed node group or not.
+</ParamField>
+
+<ParamField name="tags" type="map(string)" default="{}">
+  A map of tags to add to all resources.
+</ParamField>
+
+<ParamField name="region" type="string" default="null">
+  Region where the resource(s) will be managed. Defaults to the Region set in the provider configuration.
+</ParamField>
+
+### Node Group
+
+<ParamField name="name" type="string" default="">
+  Name of the EKS managed node group.
+</ParamField>
+
+<ParamField name="use_name_prefix" type="bool" default="true">
+  Determines whether to use `name` as is or create a unique name beginning with the `name` as the prefix.
+</ParamField>
+
+<ParamField name="subnet_ids" type="list(string)" default="null">
+  Identifiers of EC2 Subnets to associate with the EKS Node Group. These subnets must have the following resource tag: `kubernetes.io/cluster/CLUSTER_NAME`.
+</ParamField>
+
+<ParamField name="min_size" type="number" default="1">
+  Minimum number of instances/nodes.
+</ParamField>
+
+<ParamField name="max_size" type="number" default="3">
+  Maximum number of instances/nodes.
+</ParamField>
+
+<ParamField name="desired_size" type="number" default="1">
+  Desired number of instances/nodes.
+</ParamField>
+
+<ParamField name="kubernetes_version" type="string" default="null">
+  Kubernetes version. Defaults to EKS Cluster Kubernetes version.
+</ParamField>
+
+<ParamField name="force_update_version" type="bool" default="null">
+  Force version update if existing pods are unable to be drained due to a pod disruption budget issue.
+</ParamField>
+
+### AMI
+
+<ParamField name="ami_type" type="string" default="AL2023_x86_64_STANDARD">
+  Type of Amazon Machine Image (AMI) associated with the EKS Node Group. See the AWS documentation for valid values.
+</ParamField>
+
+<ParamField name="ami_id" type="string" default="">
+  The AMI from which to launch the instance. If not supplied, EKS will use its own default image.
+</ParamField>
+
+<ParamField name="ami_release_version" type="string" default="null">
+  The AMI version. Defaults to latest AMI release version for the given Kubernetes version and AMI type.
+</ParamField>
+
+<ParamField name="use_latest_ami_release_version" type="bool" default="true">
+  Determines whether to use the latest AMI release version for the given `ami_type` (except for `CUSTOM`). Note: `ami_type` and `kubernetes_version` must be supplied in order to enable this feature.
+</ParamField>
+
+### Instance
+
+<ParamField name="instance_types" type="list(string)" default="null">
+  Set of instance types associated with the EKS Node Group. Defaults to `["t3.medium"]`.
+</ParamField>
+
+<ParamField name="capacity_type" type="string" default="ON_DEMAND">
+  Type of capacity associated with the EKS Node Group. Valid values: `ON_DEMAND`, `SPOT`.
+</ParamField>
+
+<ParamField name="disk_size" type="number" default="null">
+  Disk size in GiB for nodes. Defaults to `20`. Only valid when `use_custom_launch_template` = `false`.
+</ParamField>
+
+### Labels and Taints
+
+<ParamField name="labels" type="map(string)" default="null">
+  Key-value map of Kubernetes labels. Only labels that are applied with the EKS API are managed by this argument. Other Kubernetes labels applied to the EKS Node Group will not be managed.
+</ParamField>
+
+<ParamField name="taints" type="map(object)" default="null">
+  The Kubernetes taints to be applied to the nodes in the node group. Maximum of 50 taints per node group.
+
+  <Expandable title="taint object fields">
+    <ParamField name="key" type="string">The key of the taint.</ParamField>
+    <ParamField name="value" type="string" default="null">The value of the taint.</ParamField>
+    <ParamField name="effect" type="string">The effect of the taint. Valid values: `NO_SCHEDULE`, `NO_EXECUTE`, `PREFER_NO_SCHEDULE`.</ParamField>
+  </Expandable>
+</ParamField>
+
+### Update Config
+
+<ParamField name="update_config" type="object" default="{ max_unavailable_percentage = 33 }">
+  Configuration block of settings for max unavailable resources during node group updates.
+
+  <Expandable title="update_config fields">
+    <ParamField name="max_unavailable" type="number" default="null">Maximum number of nodes unavailable at once during a version update.</ParamField>
+    <ParamField name="max_unavailable_percentage" type="number" default="null">Desired max percentage of unavailable worker nodes during a node group update.</ParamField>
+    <ParamField name="update_strategy" type="string" default="null">Update strategy for the node group.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="node_repair_config" type="object" default="null">
+  The node auto repair configuration for the node group.
+
+  <Expandable title="node_repair_config fields">
+    <ParamField name="enabled" type="bool" default="true">Whether node auto repair is enabled.</ParamField>
+    <ParamField name="max_parallel_nodes_repaired_count" type="number" default="null">Max number of nodes to repair in parallel.</ParamField>
+    <ParamField name="max_parallel_nodes_repaired_percentage" type="number" default="null">Max percentage of nodes to repair in parallel.</ParamField>
+    <ParamField name="max_unhealthy_node_threshold_count" type="number" default="null">Max unhealthy node count before repair stops.</ParamField>
+    <ParamField name="max_unhealthy_node_threshold_percentage" type="number" default="null">Max unhealthy node percentage before repair stops.</ParamField>
+    <ParamField name="node_repair_config_overrides" type="list(object)" default="null">Per-condition overrides for node repair behavior.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="remote_access" type="object" default="null">
+  Configuration block with remote access settings. Only valid when `use_custom_launch_template` = `false`.
+
+  <Expandable title="remote_access fields">
+    <ParamField name="ec2_ssh_key" type="string" default="null">EC2 SSH key to use for remote access.</ParamField>
+    <ParamField name="source_security_group_ids" type="list(string)" default="null">List of security group IDs to allow SSH access from.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="timeouts" type="object" default="null">
+  Create, update, and delete timeout configurations for the node group.
+
+  <Expandable title="timeouts fields">
+    <ParamField name="create" type="string" default="null">Create timeout.</ParamField>
+    <ParamField name="update" type="string" default="null">Update timeout.</ParamField>
+    <ParamField name="delete" type="string" default="null">Delete timeout.</ParamField>
+  </Expandable>
+</ParamField>
+
+### User Data
+
+<ParamField name="enable_bootstrap_user_data" type="bool" default="false">
+  Determines whether the bootstrap configurations are populated within the user data template. Only valid when using a custom AMI via `ami_id`.
+</ParamField>
+
+<ParamField name="cluster_name" type="string" default="">
+  Name of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_endpoint" type="string" default="null">
+  Endpoint of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_auth_base64" type="string" default="null">
+  Base64 encoded CA of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_service_cidr" type="string" default="null">
+  The CIDR block (IPv4 or IPv6) used by the cluster to assign Kubernetes service IP addresses.
+</ParamField>
+
+<ParamField name="pre_bootstrap_user_data" type="string" default="null">
+  User data that is injected into the user data script ahead of the EKS bootstrap script. Not used when `ami_type` = `BOTTLEROCKET_*`.
+</ParamField>
+
+<ParamField name="post_bootstrap_user_data" type="string" default="null">
+  User data that is appended to the user data script after of the EKS bootstrap script. Not used when `ami_type` = `BOTTLEROCKET_*`.
+</ParamField>
+
+<ParamField name="bootstrap_extra_args" type="string" default="null">
+  Additional arguments passed to the bootstrap script. When `ami_type` = `BOTTLEROCKET_*`, these are additional settings that are provided to the Bottlerocket user data.
+</ParamField>
+
+<ParamField name="user_data_template_path" type="string" default="null">
+  Path to a local, custom user data template file to use when rendering user data.
+</ParamField>
+
+<ParamField name="cloudinit_pre_nodeadm" type="list(object)" default="null">
+  Array of cloud-init document parts that are created before the nodeadm document part.
+
+  <Expandable title="cloudinit part fields">
+    <ParamField name="content" type="string">The content of the cloud-init part.</ParamField>
+    <ParamField name="content_type" type="string" default="null">The MIME content type of the part.</ParamField>
+    <ParamField name="filename" type="string" default="null">The filename for the part.</ParamField>
+    <ParamField name="merge_type" type="string" default="null">The merge behavior for the part.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="cloudinit_post_nodeadm" type="list(object)" default="null">
+  Array of cloud-init document parts that are created after the nodeadm document part.
+
+  <Expandable title="cloudinit part fields">
+    <ParamField name="content" type="string">The content of the cloud-init part.</ParamField>
+    <ParamField name="content_type" type="string" default="null">The MIME content type of the part.</ParamField>
+    <ParamField name="filename" type="string" default="null">The filename for the part.</ParamField>
+    <ParamField name="merge_type" type="string" default="null">The merge behavior for the part.</ParamField>
+  </Expandable>
+</ParamField>
+
+### Launch Template
+
+<ParamField name="create_launch_template" type="bool" default="true">
+  Determines whether to create a launch template or not. If set to `false`, EKS will use its own default launch template.
+</ParamField>
+
+<ParamField name="use_custom_launch_template" type="bool" default="true">
+  Determines whether to use a custom launch template or not. If set to `false`, EKS will use its own default launch template.
+</ParamField>
+
+<ParamField name="launch_template_id" type="string" default="">
+  The ID of an existing launch template to use. Required when `create_launch_template` = `false` and `use_custom_launch_template` = `true`.
+</ParamField>
+
+<ParamField name="launch_template_name" type="string" default="null">
+  Name of launch template to be created.
+</ParamField>
+
+<ParamField name="launch_template_use_name_prefix" type="bool" default="true">
+  Determines whether to use `launch_template_name` as is or create a unique name beginning with the `launch_template_name` as the prefix.
+</ParamField>
+
+<ParamField name="launch_template_description" type="string" default="null">
+  Description of the launch template.
+</ParamField>
+
+<ParamField name="launch_template_version" type="string" default="null">
+  Launch template version number. The default is `$Default`.
+</ParamField>
+
+<ParamField name="launch_template_default_version" type="string" default="null">
+  Default version of the launch template.
+</ParamField>
+
+<ParamField name="update_launch_template_default_version" type="bool" default="true">
+  Whether to update the launch templates default version on each update. Conflicts with `launch_template_default_version`.
+</ParamField>
+
+<ParamField name="launch_template_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the tag_specifications of launch template created.
+</ParamField>
+
+<ParamField name="tag_specifications" type="list(string)" default="['instance', 'volume', 'network-interface']">
+  The tags to apply to the resources during launch.
+</ParamField>
+
+<ParamField name="ebs_optimized" type="bool" default="null">
+  If true, the launched EC2 instance(s) will be EBS-optimized.
+</ParamField>
+
+<ParamField name="key_name" type="string" default="null">
+  The key name that should be used for the instance(s).
+</ParamField>
+
+<ParamField name="disable_api_termination" type="bool" default="null">
+  If true, enables EC2 instance termination protection.
+</ParamField>
+
+<ParamField name="kernel_id" type="string" default="null">
+  The kernel ID.
+</ParamField>
+
+<ParamField name="ram_disk_id" type="string" default="null">
+  The ID of the ram disk.
+</ParamField>
+
+<ParamField name="block_device_mappings" type="map(object)" default="null">
+  Specify volumes to attach to the instance besides the volumes specified by the AMI.
+
+  <Expandable title="block device mapping fields">
+    <ParamField name="device_name" type="string" default="null">The name of the device to mount.</ParamField>
+    <ParamField name="ebs" type="object" default="null">EBS volume configuration including `delete_on_termination`, `encrypted`, `iops`, `kms_key_id`, `snapshot_id`, `throughput`, `volume_initialization_rate`, `volume_size`, and `volume_type`.</ParamField>
+    <ParamField name="no_device" type="string" default="null">Suppresses the specified device included in the AMI's block device mapping.</ParamField>
+    <ParamField name="virtual_name" type="string" default="null">The virtual device name (ephemeralN).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="capacity_reservation_specification" type="object" default="null">
+  Targeting for EC2 capacity reservations.
+</ParamField>
+
+<ParamField name="cpu_options" type="object" default="null">
+  The CPU options for the instance. Contains `amd_sev_snp`, `core_count`, and `threads_per_core`.
+</ParamField>
+
+<ParamField name="credit_specification" type="object" default="null">
+  Customize the credit specification of the instance. Contains `cpu_credits`.
+</ParamField>
+
+<ParamField name="enclave_options" type="object" default="null">
+  Enable Nitro Enclaves on launched instances. Contains `enabled`.
+</ParamField>
+
+<ParamField name="instance_market_options" type="object" default="null">
+  The market (purchasing) option for the instance. Contains `market_type` and `spot_options`.
+</ParamField>
+
+<ParamField name="maintenance_options" type="object" default="null">
+  The maintenance options for the instance. Contains `auto_recovery`.
+</ParamField>
+
+<ParamField name="license_specifications" type="list(object)" default="null">
+  A list of license specifications to associate with. Each entry contains `license_configuration_arn`.
+</ParamField>
+
+<ParamField name="metadata_options" type="object" default="{ http_endpoint = 'enabled', http_put_response_hop_limit = 1, http_tokens = 'required' }">
+  Customize the metadata options for the instance.
+
+  <Expandable title="metadata_options fields">
+    <ParamField name="http_endpoint" type="string" default="enabled">Whether the metadata service is available. Valid values: `enabled`, `disabled`.</ParamField>
+    <ParamField name="http_protocol_ipv6" type="string" default="null">Whether the IPv6 endpoint for IMDS is enabled.</ParamField>
+    <ParamField name="http_put_response_hop_limit" type="number" default="1">The desired HTTP PUT response hop limit for instance metadata requests.</ParamField>
+    <ParamField name="http_tokens" type="string" default="required">Whether tokens are required for metadata requests. Valid values: `optional`, `required`.</ParamField>
+    <ParamField name="instance_metadata_tags" type="string" default="null">Enables access to instance tags from the metadata service.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="enable_monitoring" type="bool" default="false">
+  Enables/disables detailed monitoring.
+</ParamField>
+
+<ParamField name="enable_efa_support" type="bool" default="false">
+  Determines whether to enable Elastic Fabric Adapter (EFA) support.
+</ParamField>
+
+<ParamField name="enable_efa_only" type="bool" default="true">
+  Determines whether to enable EFA (`false`, default) or EFA and EFA-only (`true`) network interfaces. Note: requires vpc-cni version `v1.18.4` or later.
+</ParamField>
+
+<ParamField name="efa_indices" type="list(number)" default="[0]">
+  The indices of the network interfaces that should be EFA-enabled. Only valid when `enable_efa_support` = `true`.
+</ParamField>
+
+<ParamField name="network_interfaces" type="list(object)" default="[]">
+  Customize network interfaces to be attached at instance boot time.
+</ParamField>
+
+<ParamField name="placement" type="object" default="null">
+  The placement of the instance. Contains `affinity`, `availability_zone`, `group_name`, `host_id`, `host_resource_group_arn`, `partition_number`, `spread_domain`, and `tenancy`.
+</ParamField>
+
+<ParamField name="create_placement_group" type="bool" default="false">
+  Determines whether a placement group is created and used by the node group.
+</ParamField>
+
+<ParamField name="private_dns_name_options" type="object" default="null">
+  The options for the instance hostname. The default values are inherited from the subnet.
+</ParamField>
+
+<ParamField name="vpc_security_group_ids" type="list(string)" default="[]">
+  A list of security group IDs to associate.
+</ParamField>
+
+<ParamField name="cluster_primary_security_group_id" type="string" default="null">
+  The ID of the EKS cluster primary security group to associate with the instance(s).
+</ParamField>
+
+### IAM Role
+
+<ParamField name="create_iam_role" type="bool" default="true">
+  Determines whether an IAM role is created or to use an existing IAM role.
+</ParamField>
+
+<ParamField name="cluster_ip_family" type="string" default="ipv4">
+  The IP family used to assign Kubernetes pod and service addresses. Valid values are `ipv4` (default) and `ipv6`.
+</ParamField>
+
+<ParamField name="iam_role_arn" type="string" default="null">
+  Existing IAM role ARN for the node group. Required if `create_iam_role` is set to `false`.
+</ParamField>
+
+<ParamField name="iam_role_name" type="string" default="null">
+  Name to use on IAM role created.
+</ParamField>
+
+<ParamField name="iam_role_use_name_prefix" type="bool" default="true">
+  Determines whether the IAM role name (`iam_role_name`) is used as a prefix.
+</ParamField>
+
+<ParamField name="iam_role_path" type="string" default="null">
+  IAM role path.
+</ParamField>
+
+<ParamField name="iam_role_description" type="string" default="EKS managed node group IAM role">
+  Description of the role.
+</ParamField>
+
+<ParamField name="iam_role_permissions_boundary" type="string" default="null">
+  ARN of the policy that is used to set the permissions boundary for the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_attach_cni_policy" type="bool" default="true">
+  Whether to attach the `AmazonEKS_CNI_Policy`/`AmazonEKS_CNI_IPv6_Policy` IAM policy to the IAM role. WARNING: If set `false` the permissions must be assigned to the `aws-node` DaemonSet pods via another method or nodes will not be able to join the cluster.
+</ParamField>
+
+<ParamField name="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional policies to be added to the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the IAM role created.
+</ParamField>
+
+<ParamField name="create_iam_role_policy" type="bool" default="true">
+  Determines whether an IAM role policy is created or not.
+</ParamField>
+
+<ParamField name="iam_role_policy_statements" type="list(object)" default="null">
+  A list of IAM policy statements - used for adding specific IAM permissions as needed.
+</ParamField>
+
+### Security Group
+
+<ParamField name="create_security_group" type="bool" default="true">
+  Determines if a security group is created.
+</ParamField>
+
+<ParamField name="security_group_name" type="string" default="null">
+  Name to use on security group created.
+</ParamField>
+
+<ParamField name="security_group_use_name_prefix" type="bool" default="true">
+  Determines whether the security group name is used as a prefix.
+</ParamField>
+
+<ParamField name="security_group_description" type="string" default="null">
+  Description of the security group created.
+</ParamField>
+
+<ParamField name="security_group_ingress_rules" type="map(object)" default="{}">
+  Security group ingress rules to add to the security group created.
+</ParamField>
+
+<ParamField name="security_group_egress_rules" type="map(object)" default="{}">
+  Security group egress rules to add to the security group created.
+</ParamField>
+
+<ParamField name="security_group_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the security group created.
+</ParamField>
+
+---
+
+## Outputs
+
+### Launch Template
+
+<ResponseField name="launch_template_id" type="string">
+  The ID of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_arn" type="string">
+  The ARN of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_latest_version" type="number">
+  The latest version of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_name" type="string">
+  The name of the launch template.
+</ResponseField>
+
+### Node Group
+
+<ResponseField name="node_group_arn" type="string">
+  Amazon Resource Name (ARN) of the EKS Node Group.
+</ResponseField>
+
+<ResponseField name="node_group_id" type="string">
+  EKS Cluster name and EKS Node Group name separated by a colon (`:`).
+</ResponseField>
+
+<ResponseField name="node_group_resources" type="list">
+  List of objects containing information about underlying resources.
+</ResponseField>
+
+<ResponseField name="node_group_autoscaling_group_names" type="list(string)">
+  List of the autoscaling group names.
+</ResponseField>
+
+<ResponseField name="node_group_status" type="string">
+  Status of the EKS Node Group.
+</ResponseField>
+
+<ResponseField name="node_group_labels" type="map(string)">
+  Map of labels applied to the node group.
+</ResponseField>
+
+<ResponseField name="node_group_taints" type="list">
+  List of objects containing information about taints applied to the node group.
+</ResponseField>
+
+### IAM Role
+
+<ResponseField name="iam_role_name" type="string">
+  The name of the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_arn" type="string">
+  The Amazon Resource Name (ARN) specifying the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_unique_id" type="string">
+  Stable and unique string identifying the IAM role.
+</ResponseField>
+
+### Security Group
+
+<ResponseField name="security_group_arn" type="string">
+  Amazon Resource Name (ARN) of the security group.
+</ResponseField>
+
+<ResponseField name="security_group_id" type="string">
+  ID of the security group.
+</ResponseField>

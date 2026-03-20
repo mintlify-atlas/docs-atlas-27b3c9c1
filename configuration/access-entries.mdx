@@ -1,0 +1,256 @@
+---
+title: Access Entries
+description: Manage EKS cluster authentication using access entries, policy associations, and authentication modes without the aws-auth ConfigMap.
+---
+
+EKS Cluster Access Management (CAM) replaced the `aws-auth` ConfigMap as the primary mechanism for granting IAM principals access to a cluster. Access entries are managed through the EKS API and can be created, updated, and deleted at any time.
+
+## Authentication Modes
+
+The `authentication_mode` variable controls how the cluster authenticates principals.
+
+| Value | Behavior |
+|---|---|
+| `API_AND_CONFIG_MAP` (default) | Both the EKS access entry API and the `aws-auth` ConfigMap are active |
+| `API` | Only the access entry API is used. `aws-auth` ConfigMap is ignored |
+| `CONFIG_MAP` | Legacy mode. Only `aws-auth` ConfigMap is used |
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  authentication_mode = "API_AND_CONFIG_MAP"
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+<Note>
+When `authentication_mode` is `API_AND_CONFIG_MAP` or `API`, EKS automatically creates access entries for the IAM roles used by EKS managed node groups and Fargate profiles. For self-managed node groups, the module creates the access entry automatically on your behalf.
+</Note>
+
+---
+
+## Cluster Creator Admin Permissions
+
+Set `enable_cluster_creator_admin_permissions = true` to automatically grant the IAM identity running Terraform full administrator access to the cluster via an access entry. This can be enabled or disabled at any time.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  enable_cluster_creator_admin_permissions = true
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+<Note>
+This module hard-codes `bootstrap_cluster_creator_admin_permissions = false` in the EKS cluster resource. That AWS-level setting is only applied at cluster creation and cannot be changed. `enable_cluster_creator_admin_permissions` achieves the same result through an access entry, which can be toggled at any time.
+</Note>
+
+---
+
+## Access Entry Types
+
+Each access entry has a `type` that determines what kind of principal it represents.
+
+| Type | Description |
+|---|---|
+| `STANDARD` (default) | IAM user or role granted Kubernetes RBAC permissions via policy associations |
+| `EC2_LINUX` | IAM role used by EC2 Linux nodes (self-managed node groups) |
+| `FARGATE_LINUX` | IAM role used by Fargate profiles |
+| `HYBRID_LINUX` | IAM role used by EKS Hybrid nodes |
+
+---
+
+## Configuring Access Entries
+
+The `access_entries` variable accepts a map where each key is a logical name for the entry.
+
+### Standard Access Entry with Policy Association
+
+Grant an IAM role view access to a specific namespace:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  access_entries = {
+    readonly_user = {
+      principal_arn = "arn:aws:iam::123456789012:role/ReadOnlyRole"
+
+      policy_associations = {
+        view = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+          access_scope = {
+            type       = "namespace"
+            namespaces = ["default", "production"]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Cluster-Wide Admin Access
+
+Grant an IAM role cluster-wide admin access:
+
+```hcl
+access_entries = {
+  admin_role = {
+    principal_arn = "arn:aws:iam::123456789012:role/ClusterAdminRole"
+
+    policy_associations = {
+      admin = {
+        policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        access_scope = {
+          type = "cluster"
+        }
+      }
+    }
+  }
+}
+```
+
+### Multiple Policy Associations
+
+A single access entry can have multiple policy associations:
+
+```hcl
+access_entries = {
+  developer = {
+    principal_arn = "arn:aws:iam::123456789012:role/DeveloperRole"
+
+    policy_associations = {
+      edit_default = {
+        policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+        access_scope = {
+          type       = "namespace"
+          namespaces = ["default"]
+        }
+      }
+      view_monitoring = {
+        policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+        access_scope = {
+          type       = "namespace"
+          namespaces = ["monitoring", "logging"]
+        }
+      }
+    }
+  }
+}
+```
+
+### Hybrid Node Access Entry
+
+For EKS Hybrid nodes, use `type = "HYBRID_LINUX"` and reference the hybrid node IAM role:
+
+```hcl
+module "eks_hybrid_node_role" {
+  source  = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
+  version = "~> 21.0"
+}
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  access_entries = {
+    hybrid-node-role = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+}
+```
+
+---
+
+## Available EKS Access Policies
+
+<CardGroup cols={2}>
+  <Card title="AmazonEKSClusterAdminPolicy" icon="crown">
+    Full administrator access across the entire cluster. Equivalent to the `cluster-admin` ClusterRole.
+  </Card>
+  <Card title="AmazonEKSAdminPolicy" icon="user-shield">
+    Admin access within a namespace or cluster scope. Can manage most resources but not cluster-level resources like nodes.
+  </Card>
+  <Card title="AmazonEKSEditPolicy" icon="pen">
+    Read/write access to most namespaced resources. Cannot manage roles or role bindings.
+  </Card>
+  <Card title="AmazonEKSViewPolicy" icon="eye">
+    Read-only access to most namespaced resources.
+  </Card>
+</CardGroup>
+
+All policy ARNs follow the pattern: `arn:aws:eks::aws:cluster-access-policy/<PolicyName>`
+
+---
+
+## Access Entries with Managed Node Groups
+
+When `authentication_mode` is `API_AND_CONFIG_MAP` or `API`, EKS automatically creates an access entry for the IAM role of each EKS managed node group. No additional configuration is needed in the `access_entries` variable for managed node groups.
+
+For **self-managed node groups**, this module automatically creates the required `EC2_LINUX` access entry:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  # Module automatically creates an EC2_LINUX access entry
+  # for the IAM role used by this node group
+  self_managed_node_groups = {
+    workers = {
+      instance_type = "m5.large"
+      min_size      = 2
+      max_size      = 10
+      desired_size  = 2
+    }
+  }
+}
+```
+
+---
+
+## Access Entry Variable Schema
+
+```hcl
+access_entries = {
+  "<logical-name>" = {
+    principal_arn     = string                 # Required: IAM role or user ARN
+    type              = optional(string)        # Default: "STANDARD"
+    kubernetes_groups = optional(list(string))  # Kubernetes RBAC groups to assign
+    user_name         = optional(string)        # Override the Kubernetes username
+    tags              = optional(map(string))   # Tags for the access entry resource
+
+    policy_associations = optional(map(object({
+      policy_arn = string  # ARN of the EKS access policy
+      access_scope = object({
+        type       = string                # "cluster" or "namespace"
+        namespaces = optional(list(string)) # Required when type = "namespace"
+      })
+    })))
+  }
+}
+```

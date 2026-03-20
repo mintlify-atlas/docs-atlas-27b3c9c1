@@ -1,97 +1,198 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "terraform-aws-eks"
+description: "Production-grade Terraform module for creating and managing Amazon EKS clusters on AWS"
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Deploy your first EKS cluster in minutes with a working Terraform configuration.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Compute Resources" icon="server" href="/compute/overview">
+    Choose between EKS Auto Mode, managed node groups, self-managed nodes, and Fargate.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Configuration" icon="gear" href="/configuration/network-connectivity">
+    Configure networking, access control, add-ons, IRSA, and encryption.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Reference" icon="book" href="/reference/inputs">
+    Complete reference for all module inputs and outputs.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is terraform-aws-eks?
 
-Everything you need to create world-class documentation.
+`terraform-aws-eks` is a community-maintained Terraform module that creates production-ready Amazon EKS clusters. It wraps the AWS EKS service with opinionated defaults and exposes a rich set of configuration options — so you get a secure, well-configured cluster without writing hundreds of lines of Terraform from scratch.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+The module handles the full lifecycle of an EKS cluster:
 
-## Need inspiration?
+- **Control plane** — EKS cluster, IAM roles, KMS encryption, CloudWatch logging, security groups
+- **Data plane** — EKS managed node groups, self-managed node groups, Fargate profiles, EKS Auto Mode
+- **Access** — Cluster access entries, IRSA (IAM Roles for Service Accounts), OIDC provider
+- **Add-ons** — CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent, and any community add-on
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
+```hcl terraform-aws-eks usage
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  # EKS Auto Mode — fully managed data plane
+  compute_config = {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  }
+
+  enable_cluster_creator_admin_permissions = true
+
+  tags = {
+    Environment = "production"
+    Terraform   = "true"
+  }
+}
+```
+
+## Key features
+
+<CardGroup cols={3}>
+  <Card title="EKS Auto Mode" icon="wand-magic-sparkles">
+    Fully managed data plane with AWS-controlled node pools. No node group management required.
+  </Card>
+  <Card title="Managed Node Groups" icon="layer-group">
+    AWS-managed EC2 node groups with custom launch templates, AMI types, and auto-repair.
+  </Card>
+  <Card title="Self-Managed Nodes" icon="sliders">
+    Full control over EC2 Auto Scaling groups, mixed instance policies, and lifecycle hooks.
+  </Card>
+  <Card title="Fargate Profiles" icon="cloud">
+    Serverless compute — run pods without managing EC2 instances.
+  </Card>
+  <Card title="Karpenter" icon="bolt">
+    Intelligent, just-in-time node provisioning via the included Karpenter sub-module.
+  </Card>
+  <Card title="EKS Hybrid Nodes" icon="network-wired">
+    Connect on-premises and edge nodes to your EKS cluster over SSM or IAM Roles Anywhere.
+  </Card>
+  <Card title="IRSA" icon="key">
+    OIDC-based IAM Roles for Service Accounts — fine-grained pod-level AWS permissions.
+  </Card>
+  <Card title="Cluster Access Entries" icon="shield-halved">
+    API-based IAM authentication. Supports STANDARD, EC2_LINUX, FARGATE_LINUX, and HYBRID_LINUX types.
+  </Card>
+  <Card title="KMS Encryption" icon="lock">
+    Automatic KMS key creation and secret encryption with configurable key rotation.
+  </Card>
+</CardGroup>
+
+## Compute options at a glance
+
+<Tabs>
+  <Tab title="EKS Auto Mode">
+    AWS manages the entire data plane. You define node pool types; AWS handles provisioning, scaling, patching, and termination.
+
+    ```hcl
+    compute_config = {
+      enabled    = true
+      node_pools = ["general-purpose", "system"]
+    }
+    ```
+
+    Best for: Teams that want minimal operational overhead and are comfortable with AWS-managed nodes.
+  </Tab>
+  <Tab title="Managed Node Groups">
+    AWS manages the EC2 instances within the node group, but you control instance types, AMIs, and scaling parameters.
+
+    ```hcl
+    eks_managed_node_groups = {
+      main = {
+        ami_type       = "AL2023_x86_64_STANDARD"
+        instance_types = ["m5.xlarge"]
+        min_size       = 2
+        max_size       = 10
+        desired_size   = 2
+      }
+    }
+    ```
+
+    Best for: Most production workloads needing control over instance types and AMIs.
+  </Tab>
+  <Tab title="Self-Managed Node Groups">
+    You own the EC2 Auto Scaling group. Full control over every launch template parameter.
+
+    ```hcl
+    self_managed_node_groups = {
+      main = {
+        instance_type = "m5.xlarge"
+        min_size      = 2
+        max_size      = 10
+        desired_size  = 2
+      }
+    }
+    ```
+
+    Best for: Advanced use cases requiring mixed instance policies, custom lifecycle hooks, or placement groups.
+  </Tab>
+  <Tab title="Fargate">
+    Serverless — each pod runs in its own isolated compute environment. No nodes to manage.
+
+    ```hcl
+    fargate_profiles = {
+      default = {
+        selectors = [
+          { namespace = "kube-system" },
+          { namespace = "default" }
+        ]
+      }
+    }
+    ```
+
+    Best for: Batch workloads, dev/test environments, or workloads that don't need persistent local storage.
+  </Tab>
+</Tabs>
+
+## Requirements
+
+| Requirement | Version |
+|-------------|---------|
+| Terraform | `>= 1.5.7` |
+| AWS Provider | `>= 6.28` |
+| time Provider | `>= 0.9` |
+| tls Provider | `>= 4.0` |
+
+## Getting started
+
+<Steps>
+  <Step title="Add the module to your Terraform configuration">
+    Reference the module from the Terraform Registry and pin to a version:
+
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+    }
+    ```
+  </Step>
+  <Step title="Configure your cluster">
+    Set the required variables — cluster name, Kubernetes version, VPC, and subnets. Choose your compute strategy.
+  </Step>
+  <Step title="Initialize and apply">
+    ```bash
+    terraform init
+    terraform plan
+    terraform apply
+    ```
+  </Step>
+  <Step title="Access your cluster">
+    ```bash
+    aws eks update-kubeconfig --name my-cluster --region us-east-1
+    kubectl get nodes
+    ```
+  </Step>
+</Steps>
+
+<Card title="Follow the full quickstart guide" icon="arrow-right" href="/quickstart">
+  Walk through a complete working example from zero to a running EKS cluster.
 </Card>

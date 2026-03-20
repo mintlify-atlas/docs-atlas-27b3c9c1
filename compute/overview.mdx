@@ -1,0 +1,95 @@
+---
+title: Compute Resources
+description: Overview of all compute options available in the terraform-aws-eks module, including EKS Auto Mode, managed node groups, self-managed node groups, and Fargate profiles.
+---
+
+The `terraform-aws-eks` module supports four distinct compute strategies for running workloads on Amazon EKS. Each option offers different trade-offs in control, operational overhead, and cost.
+
+## Compute options
+
+<CardGroup cols={2}>
+  <Card title="EKS Auto Mode" icon="wand-magic-sparkles" href="/compute/eks-auto-mode">
+    Fully managed compute with automatic node provisioning, scaling, and lifecycle management. AWS manages the underlying EC2 fleet.
+  </Card>
+  <Card title="EKS Managed Node Groups" icon="server" href="/compute/eks-managed-node-groups">
+    AWS-managed Auto Scaling Groups where EKS handles node provisioning and lifecycle, but you retain control over instance configuration via launch templates.
+  </Card>
+  <Card title="Self-Managed Node Groups" icon="gear" href="/compute/self-managed-node-groups">
+    Fully self-managed Auto Scaling Groups. You control every aspect of the node lifecycle, launch template, and bootstrap process.
+  </Card>
+  <Card title="Fargate Profiles" icon="cloud" href="/compute/fargate-profiles">
+    Serverless compute for pods. No nodes to manage — AWS provisions isolated compute for each pod matching your selectors.
+  </Card>
+</CardGroup>
+
+## Comparison
+
+| Feature | EKS Auto Mode | Managed Node Groups | Self-Managed | Fargate |
+|---|---|---|---|---|
+| Node management | AWS | AWS | You | AWS (serverless) |
+| Launch template | Not applicable | Custom (default on) | Full control | Not applicable |
+| Custom AMI | No | Yes | Yes | No |
+| Spot / On-Demand mix | Automatic | Via capacity type | Via mixed instances policy | No |
+| EFA support | No | Yes | Yes | No |
+| Bottlerocket OS | No | Yes | Yes | No |
+| Windows nodes | No | Yes | Yes | No |
+| Bin packing / cost optimization | Automatic | Manual | Manual | Per-pod billing |
+| Best for | Simplicity, managed operations | Standard workloads needing customization | Advanced control or custom AMIs | Batch, burst, or isolation workloads |
+
+## Default node group configurations
+
+All node group types inherit cluster-level defaults unless overridden at the node group level. The module waits `30s` after the EKS cluster becomes active before creating any node groups (configurable via `dataplane_wait_duration`).
+
+For `eks_managed_node_groups` and `self_managed_node_groups`, when no values are specified:
+
+- `min_size` defaults to `1`
+- `max_size` defaults to `3`
+- `desired_size` defaults to `1`
+- `ami_type` defaults to `AL2023_x86_64_STANDARD`
+- `instance_type` / `instance_types` defaults to `t3.medium` (managed) or `m6i.large` (self-managed)
+
+<Note>
+  The `desired_size` value is only respected on initial creation. Subsequent changes are ignored to avoid conflicts with the cluster autoscaler or Karpenter managing the desired count externally.
+</Note>
+
+## Combining compute types
+
+The module supports running multiple compute types simultaneously in the same cluster. A common pattern is using Fargate for system components while managed node groups serve application workloads, or enabling EKS Auto Mode alongside a self-managed node group for GPU workloads that require specific drivers.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  # Fargate for system workloads
+  fargate_profiles = {
+    kube-system = {
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
+  }
+
+  # Managed node groups for application workloads
+  eks_managed_node_groups = {
+    app = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["m6i.large"]
+      min_size       = 2
+      max_size       = 10
+      desired_size   = 2
+    }
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  tags = {
+    Environment = "production"
+    Terraform   = "true"
+  }
+}
+```

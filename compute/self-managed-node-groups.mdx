@@ -1,0 +1,317 @@
+---
+title: Self-Managed Node Groups
+description: Configure self-managed node groups with full control over Auto Scaling Groups, launch templates, mixed instances policies, and bootstrap user data.
+---
+
+Self-managed node groups give you complete control over the EC2 instances that join your EKS cluster. Unlike EKS managed node groups, the entire Auto Scaling Group lifecycle — including AMI selection, bootstrap configuration, and instance replacement — is your responsibility.
+
+Refer to the [AWS self-managed nodes documentation](https://docs.aws.amazon.com/eks/latest/userguide/worker.html) for service-level details.
+
+## How it works
+
+The `self-managed-node-group` submodule creates:
+
+- An EC2 launch template
+- An Auto Scaling Group (ASG) using that launch template
+- An IAM instance profile and role for the nodes
+- An EKS access entry so nodes can join the cluster
+- A security group for the node group
+
+By default, the module uses the latest AWS EKS Optimized AMI for the given Kubernetes version and AMI type.
+
+## Basic configuration
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  self_managed_node_groups = {
+    # Uses the latest EKS Optimized AMI for Kubernetes 1.33 automatically
+    default = {}
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+## Examples
+
+<Tabs>
+  <Tab title="AL2023">
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+
+      name               = "my-cluster"
+      kubernetes_version = "1.33"
+
+      addons = {
+        coredns = {}
+        eks-pod-identity-agent = {
+          before_compute = true
+        }
+        kube-proxy = {}
+        vpc-cni = {
+          before_compute = true
+        }
+      }
+
+      vpc_id     = module.vpc.vpc_id
+      subnet_ids = module.vpc.private_subnets
+
+      self_managed_node_groups = {
+        example = {
+          ami_type      = "AL2023_x86_64_STANDARD"
+          instance_type = "m6i.large"
+
+          min_size     = 2
+          max_size     = 5
+          desired_size = 2
+
+          # Optional: pass additional nodeadm configuration
+          cloudinit_pre_nodeadm = [
+            {
+              content_type = "application/node.eks.aws"
+              content      = <<-EOT
+                ---
+                apiVersion: node.eks.aws/v1alpha1
+                kind: NodeConfig
+                spec:
+                  kubelet:
+                    config:
+                      shutdownGracePeriod: 30s
+              EOT
+            }
+          ]
+        }
+      }
+
+      tags = {
+        Environment = "dev"
+        Terraform   = "true"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Bottlerocket">
+    To use Bottlerocket, specify the `ami_type` and supply a Bottlerocket OS AMI ID:
+
+    ```hcl
+    self_managed_node_groups = {
+      bottlerocket = {
+        ami_id        = data.aws_ami.bottlerocket_ami.id
+        ami_type      = "BOTTLEROCKET_x86_64"
+        instance_type = "m6i.large"
+
+        min_size     = 2
+        max_size     = 5
+        desired_size = 2
+
+        # Bottlerocket settings use TOML format
+        bootstrap_extra_args = <<-EOT
+          # The admin host container provides SSH access and runs with "superpowers".
+          [settings.host-containers.admin]
+          enabled = false
+
+          # The control host container provides out-of-band access via SSM.
+          [settings.host-containers.control]
+          enabled = true
+
+          # extra args added
+          [settings.kernel]
+          lockdown = "integrity"
+        EOT
+      }
+    }
+    ```
+
+    <Note>
+      Bottlerocket user data uses the TOML format. The `bootstrap_extra_args` variable maps directly to additional [Bottlerocket settings](https://bottlerocket.dev/en/os/latest/api/settings/).
+    </Note>
+  </Tab>
+</Tabs>
+
+## Auto Scaling Group configuration
+
+The module creates an Auto Scaling Group with a rolling instance refresh strategy by default:
+
+```hcl
+# Default instance_refresh configuration
+instance_refresh = {
+  strategy = "Rolling"
+  preferences = {
+    min_healthy_percentage = 66
+  }
+}
+```
+
+You can override any ASG-level settings at the node group level:
+
+```hcl
+self_managed_node_groups = {
+  example = {
+    instance_type = "m6i.large"
+    min_size      = 2
+    max_size      = 10
+    desired_size  = 2
+
+    # Protect nodes from scale-in during drain
+    protect_from_scale_in = true
+
+    # Replace nodes after 7 days maximum lifetime
+    max_instance_lifetime = 604800
+
+    # Custom instance refresh settings
+    instance_refresh = {
+      strategy = "Rolling"
+      preferences = {
+        min_healthy_percentage = 75
+        instance_warmup        = 300
+      }
+    }
+  }
+}
+```
+
+## Mixed instances policy
+
+For cost optimization using a blend of On-Demand and Spot instances, enable `use_mixed_instances_policy`:
+
+```hcl
+self_managed_node_groups = {
+  mixed = {
+    min_size     = 2
+    max_size     = 10
+    desired_size = 4
+
+    use_mixed_instances_policy = true
+    mixed_instances_policy = {
+      instances_distribution = {
+        on_demand_base_capacity                  = 1
+        on_demand_percentage_above_base_capacity = 25
+        spot_allocation_strategy                 = "capacity-optimized"
+      }
+      launch_template = {
+        override = [
+          { instance_type = "m6i.large" },
+          { instance_type = "m5.large" },
+          { instance_type = "m5a.large" },
+        ]
+      }
+    }
+  }
+}
+```
+
+## Launch template options
+
+The module creates a launch template for each self-managed node group. All standard EC2 launch template options are exposed as variables:
+
+```hcl
+self_managed_node_groups = {
+  example = {
+    instance_type = "m6i.large"
+
+    # EBS root volume customization
+    block_device_mappings = {
+      xvda = {
+        device_name = "/dev/xvda"
+        ebs = {
+          volume_size           = 50
+          volume_type           = "gp3"
+          encrypted             = true
+          delete_on_termination = true
+        }
+      }
+    }
+
+    # IMDSv2 required (module default)
+    metadata_options = {
+      http_endpoint               = "enabled"
+      http_tokens                 = "required"
+      http_put_response_hop_limit = 2
+    }
+
+    # Detailed CloudWatch monitoring
+    enable_monitoring = true
+  }
+}
+```
+
+## Bootstrap user data
+
+For AL2023 nodes, user data is configured using cloud-init multi-part documents with `nodeadm`:
+
+```hcl
+self_managed_node_groups = {
+  example = {
+    ami_type      = "AL2023_x86_64_STANDARD"
+    instance_type = "m6i.large"
+
+    # Injected before the nodeadm bootstrap document
+    cloudinit_pre_nodeadm = [{
+      content_type = "application/node.eks.aws"
+      content      = <<-EOT
+        ---
+        apiVersion: node.eks.aws/v1alpha1
+        kind: NodeConfig
+        spec:
+          kubelet:
+            flags:
+              - --node-labels=node.kubernetes.io/lifecycle=spot
+      EOT
+    }]
+
+    # Injected after the nodeadm bootstrap document
+    cloudinit_post_nodeadm = [{
+      content_type = "text/x-shellscript; charset=\"us-ascii\""
+      content      = <<-EOT
+        #!/bin/bash
+        echo "Bootstrap complete" | tee /var/log/bootstrap-done.txt
+      EOT
+    }]
+  }
+}
+```
+
+## IAM and access entry
+
+The module creates an IAM instance profile, an IAM role with the required EKS node policies, and an EKS access entry (`create_access_entry = true` by default). The access entry allows the node role to join the cluster without configuring the `aws-auth` ConfigMap.
+
+To use an existing IAM role:
+
+```hcl
+self_managed_node_groups = {
+  example = {
+    instance_type = "m6i.large"
+
+    create_iam_instance_profile = false
+    iam_instance_profile_arn    = "arn:aws:iam::123456789012:instance-profile/my-node-profile"
+  }
+}
+```
+
+## Key variables reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `instance_type` | `m6i.large` | EC2 instance type |
+| `ami_type` | `AL2023_x86_64_STANDARD` | AMI family (determines bootstrap behavior) |
+| `ami_id` | `""` | Custom AMI ID; leave empty to use the latest EKS-optimized AMI |
+| `min_size` | `1` | ASG minimum capacity |
+| `max_size` | `3` | ASG maximum capacity |
+| `desired_size` | `1` | ASG initial desired capacity |
+| `use_mixed_instances_policy` | `false` | Enable mixed On-Demand and Spot instances |
+| `create_access_entry` | `true` | Create EKS access entry for the node role |
+| `enable_efa_support` | `false` | Enable EFA networking interfaces |

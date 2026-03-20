@@ -1,0 +1,189 @@
+---
+title: EKS Auto Mode
+description: Run EKS clusters with fully managed compute using EKS Auto Mode. AWS handles node provisioning, scaling, patching, and termination automatically.
+---
+
+EKS Auto Mode is a fully managed compute option where AWS handles node provisioning, scaling, operating system updates, and lifecycle management automatically. You define the desired state through node pools and EKS manages the EC2 fleet to satisfy it.
+
+With EKS Auto Mode enabled, you do not create or manage node groups. EKS automatically selects instance types, provisions nodes on demand, and terminates them when no longer needed.
+
+## Built-in node pools
+
+EKS Auto Mode ships with two built-in node pool configurations that cover the most common workload patterns:
+
+| Node Pool | Purpose |
+|---|---|
+| `general-purpose` | Standard application workloads — balanced compute, memory, and networking |
+| `system` | Core EKS system components (CoreDNS, kube-proxy, VPC CNI, etc.) |
+
+Specify one or both node pools in `compute_config.node_pools`:
+
+```hcl
+compute_config = {
+  enabled    = true
+  node_pools = ["general-purpose"]
+}
+```
+
+```hcl
+compute_config = {
+  enabled    = true
+  node_pools = ["general-purpose", "system"]
+}
+```
+
+## Basic example
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "example"
+  kubernetes_version = "1.33"
+
+  endpoint_public_access = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  compute_config = {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+## Custom node pools only
+
+If you want to define your own Karpenter-style node pools without using the built-in EKS Auto Mode pools, set `create_auto_mode_iam_resources = true` and omit `node_pools`:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "example"
+  kubernetes_version = "1.33"
+
+  endpoint_public_access = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  # Create only the IAM resources needed for EKS Auto Mode custom node pools
+  create_auto_mode_iam_resources = true
+  compute_config = {
+    enabled = true
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+`create_auto_mode_iam_resources` is useful when you are managing your own node pools and need the EKS Auto Mode node IAM role and associated policy attachments without relying on built-in node pools.
+
+## IAM resources
+
+When EKS Auto Mode is enabled, the module creates the following IAM resources by default:
+
+- An IAM role (`aws_iam_role.eks_auto`) with the `AmazonEKSAutoNodePolicy` and `AmazonEC2ContainerRegistryPullOnly` policies attached
+- Policy attachments for any additional policies supplied via `node_iam_role_additional_policies`
+- Optional permissions for custom tags on resources created by EKS Auto Mode (enabled by `enable_auto_mode_custom_tags`, default `true`)
+
+The node IAM role is controlled by the following variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `create_node_iam_role` | `true` | Create the EKS Auto Mode node IAM role |
+| `node_iam_role_name` | `null` | Custom name for the node IAM role |
+| `node_iam_role_additional_policies` | `{}` | Extra policy ARNs to attach to the node role |
+| `create_auto_mode_iam_resources` | `false` | Create IAM resources for custom node pools without built-in pools |
+| `enable_auto_mode_custom_tags` | `true` | Enable permissions for custom tagging of EKS Auto Mode resources |
+
+## Disabling EKS Auto Mode
+
+<Warning>
+  Due to a constraint in the EKS Auto Mode API, **you cannot disable EKS Auto Mode by simply removing the `compute_config` block**. Doing so will result in an API error.
+
+  To disable EKS Auto Mode, you must first apply with `enabled = false`:
+
+  ```hcl
+  compute_config = {
+    enabled = false
+  }
+  ```
+
+  Only after a successful apply with `enabled = false` can you then remove the `compute_config` block from your configuration.
+</Warning>
+
+## `compute_config` variable reference
+
+The `compute_config` variable accepts the following attributes:
+
+```hcl
+compute_config = {
+  # Whether EKS Auto Mode is enabled
+  enabled = true
+
+  # Built-in node pools to activate: "general-purpose", "system", or both
+  # Omit or set to null to use only custom node pools
+  node_pools = ["general-purpose"]
+
+  # Optional: ARN of a pre-existing node IAM role
+  # If not specified, the module creates one when create_node_iam_role = true
+  node_role_arn = null
+}
+```
+
+## EKS Auto Mode with Hybrid Nodes
+
+EKS Auto Mode can coexist with EKS Hybrid Nodes. A common configuration enables the `system` node pool for core EKS components while hybrid nodes handle on-premises workloads:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "example"
+  kubernetes_version = "1.33"
+
+  compute_config = {
+    enabled    = true
+    node_pools = ["system"]
+  }
+
+  access_entries = {
+    hybrid-node-role = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+
+  remote_network_config = {
+    remote_node_networks = {
+      cidrs = ["172.16.0.0/18"]
+    }
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```

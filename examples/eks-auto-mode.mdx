@@ -1,0 +1,213 @@
+---
+title: EKS Auto Mode
+description: Deploy an Amazon EKS cluster with EKS Auto Mode enabled, delegating node lifecycle management to AWS.
+---
+
+EKS Auto Mode lets AWS fully manage the compute plane of your EKS cluster. Instead of provisioning and managing EC2 node groups yourself, you enable Auto Mode and AWS automatically provisions, scales, and terminates nodes based on workload demand. This example shows two configurations: one using the built-in `general-purpose` node pool, and one using only custom node pools (where you manage the `NodePool` and `EC2NodeClass` resources yourself).
+
+## Prerequisites
+
+- AWS credentials configured with permissions to create EKS clusters, IAM roles, VPCs, and EC2 resources
+- Terraform >= 1.5.7
+- AWS provider >= 6.28
+- The example provisions its own VPC — no pre-existing VPC is required
+
+<Warning>
+  Due to a limitation in the EKS Auto Mode API, disabling Auto Mode requires explicitly setting `compute_config = { enabled = false }` and applying before you can remove the block entirely. Simply removing the `compute_config` block will not disable Auto Mode.
+</Warning>
+
+## Example code
+
+The following is the complete `main.tf` from [`examples/eks-auto-mode`](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/eks-auto-mode).
+
+```hcl
+provider "aws" {
+  region = local.region
+}
+
+data "aws_availability_zones" "available" {
+  # Exclude local zones
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+locals {
+  name               = "ex-${basename(path.cwd)}"
+  kubernetes_version = "1.33"
+  region             = "us-west-2"
+
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    Test       = local.name
+    GithubRepo = "terraform-aws-eks"
+    GithubOrg  = "terraform-aws-modules"
+  }
+}
+
+################################################################################
+# EKS Module
+################################################################################
+
+module "eks" {
+  source = "../.."  # use "terraform-aws-modules/eks/aws" version "~> 21.0" from registry
+
+  name                   = local.name
+  kubernetes_version     = local.kubernetes_version
+  endpoint_public_access = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  compute_config = {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  tags = local.tags
+}
+
+module "eks_auto_custom_node_pools" {
+  source = "../.."  # use "terraform-aws-modules/eks/aws" version "~> 21.0" from registry
+
+  name                   = "${local.name}-custom"
+  kubernetes_version     = local.kubernetes_version
+  endpoint_public_access = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  # Create just the IAM resources for EKS Auto Mode for use with custom node pools
+  create_auto_mode_iam_resources = true
+  compute_config = {
+    enabled = true
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  tags = local.tags
+}
+
+module "disabled_eks" {
+  source = "../.."  # use "terraform-aws-modules/eks/aws" version "~> 21.0" from registry
+
+  create = false
+}
+
+################################################################################
+# Supporting Resources
+################################################################################
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 52)]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+
+  tags = local.tags
+}
+```
+
+## Key concepts
+
+### Built-in node pools vs. custom node pools
+
+| Configuration | When to use |
+|---|---|
+| `node_pools = ["general-purpose"]` | Let AWS manage a default pool; zero node-group config needed |
+| `create_auto_mode_iam_resources = true` with no `node_pools` | You define your own `NodePool` / `EC2NodeClass` CRDs but still rely on the Auto Mode IAM setup |
+
+### `compute_config` block
+
+- `enabled = true` — turns on EKS Auto Mode for the cluster
+- `node_pools` — list of built-in pools to activate; valid values include `general-purpose` and `system`
+- Omitting `node_pools` (with `create_auto_mode_iam_resources = true`) means you bring your own Karpenter-style `NodePool` resources
+
+<Note>
+  When `endpoint_public_access = true`, the Kubernetes API is reachable from the internet. Restrict `endpoint_public_access_cidrs` to your own IP range in production.
+</Note>
+
+## Deploy
+
+<Steps>
+  <Step title="Initialize Terraform">
+    Download the required providers and modules.
+
+    ```bash
+    terraform init
+    ```
+  </Step>
+
+  <Step title="Review the plan">
+    Preview what Terraform will create before applying.
+
+    ```bash
+    terraform plan
+    ```
+  </Step>
+
+  <Step title="Apply the configuration">
+    Create the cluster and all supporting resources. Cluster creation typically takes 10–15 minutes.
+
+    ```bash
+    terraform apply
+    ```
+  </Step>
+
+  <Step title="Configure kubectl">
+    Update your local kubeconfig so you can interact with the cluster.
+
+    ```bash
+    aws eks update-kubeconfig --region us-west-2 --name <cluster-name>
+    ```
+  </Step>
+</Steps>
+
+## Key outputs
+
+After a successful apply the following outputs are available:
+
+| Output | Description |
+|---|---|
+| `cluster_name` | Name of the EKS cluster |
+| `cluster_endpoint` | Kubernetes API server endpoint |
+| `cluster_certificate_authority_data` | Base64-encoded CA data for kubectl |
+| `cluster_iam_role_arn` | ARN of the cluster IAM role |
+| `node_iam_role_arn` | ARN of the EKS Auto Mode node IAM role |
+| `oidc_provider_arn` | OIDC provider ARN for IRSA |
+
+## Cleanup
+
+```bash
+terraform destroy
+```
+
+<Warning>
+  Before destroying, ensure no external resources (load balancers, persistent volumes, etc.) were created by workloads running on the cluster. Those are not managed by this Terraform configuration and must be deleted separately.
+</Warning>
+
+## Full example on GitHub
+
+[View the complete example](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/eks-auto-mode) including `outputs.tf`, `variables.tf`, and `versions.tf`.

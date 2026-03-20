@@ -1,0 +1,156 @@
+---
+title: Fargate Profile
+description: Input variables and outputs for the fargate-profile sub-module.
+---
+
+The `fargate-profile` sub-module manages [EKS Fargate Profiles](https://docs.aws.amazon.com/eks/latest/userguide/fargate.html). It is invoked for each entry in the `fargate_profiles` map on the root module.
+
+## Inputs
+
+### General
+
+<ParamField name="create" type="bool" default="true">
+  Determines whether to create Fargate profile or not.
+</ParamField>
+
+<ParamField name="tags" type="map(string)" default="{}">
+  A map of tags to add to all resources.
+</ParamField>
+
+<ParamField name="region" type="string" default="null">
+  Region where the resource(s) will be managed. Defaults to the Region set in the provider configuration.
+</ParamField>
+
+### Fargate Profile
+
+<ParamField name="cluster_name" type="string" default="">
+  Name of the EKS cluster.
+</ParamField>
+
+<ParamField name="name" type="string" default="">
+  Name of the EKS Fargate Profile.
+</ParamField>
+
+<ParamField name="subnet_ids" type="list(string)" default="[]">
+  A list of subnet IDs for the EKS Fargate Profile.
+</ParamField>
+
+<ParamField name="selectors" type="list(object)" default="null">
+  Configuration block(s) for selecting Kubernetes Pods to execute with this Fargate Profile.
+
+  <Expandable title="selector object fields">
+    <ParamField name="namespace" type="string">The Kubernetes namespace for the selector.</ParamField>
+    <ParamField name="labels" type="map(string)" default="null">Key-value map of Kubernetes labels for the selector.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="timeouts" type="object" default="null">
+  Create and delete timeout configurations for the Fargate Profile.
+
+  <Expandable title="timeouts fields">
+    <ParamField name="create" type="string" default="null">Create timeout.</ParamField>
+    <ParamField name="delete" type="string" default="null">Delete timeout.</ParamField>
+  </Expandable>
+</ParamField>
+
+### IAM Role
+
+<ParamField name="create_iam_role" type="bool" default="true">
+  Determines whether an IAM role is created or to use an existing IAM role.
+</ParamField>
+
+<ParamField name="cluster_ip_family" type="string" default="ipv4">
+  The IP family used to assign Kubernetes pod and service addresses. Valid values are `ipv4` (default) and `ipv6`.
+</ParamField>
+
+<ParamField name="iam_role_arn" type="string" default="null">
+  Existing IAM role ARN for the Fargate profile. Required if `create_iam_role` is set to `false`.
+</ParamField>
+
+<ParamField name="iam_role_name" type="string" default="">
+  Name to use on IAM role created.
+</ParamField>
+
+<ParamField name="iam_role_use_name_prefix" type="bool" default="true">
+  Determines whether the IAM role name is used as a prefix.
+</ParamField>
+
+<ParamField name="iam_role_path" type="string" default="null">
+  IAM role path.
+</ParamField>
+
+<ParamField name="iam_role_description" type="string" default="Fargate profile IAM role">
+  Description of the role.
+</ParamField>
+
+<ParamField name="iam_role_permissions_boundary" type="string" default="null">
+  ARN of the policy that is used to set the permissions boundary for the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_attach_cni_policy" type="bool" default="true">
+  Whether to attach the `AmazonEKS_CNI_Policy`/`AmazonEKS_CNI_IPv6_Policy` IAM policy to the IAM role. WARNING: If set `false` the permissions must be assigned to the `aws-node` DaemonSet pods via another method or nodes will not be able to join the cluster.
+</ParamField>
+
+<ParamField name="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional policies to be added to the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the IAM role created.
+</ParamField>
+
+<ParamField name="create_iam_role_policy" type="bool" default="true">
+  Determines whether an IAM role policy is created or not.
+</ParamField>
+
+<ParamField name="iam_role_policy_statements" type="list(object)" default="null">
+  A list of IAM policy statements - used for adding specific IAM permissions as needed.
+
+  <Expandable title="statement object fields">
+    <ParamField name="sid" type="string" default="null">Statement ID.</ParamField>
+    <ParamField name="actions" type="list(string)" default="null">List of IAM actions.</ParamField>
+    <ParamField name="not_actions" type="list(string)" default="null">List of IAM actions to explicitly not allow.</ParamField>
+    <ParamField name="effect" type="string" default="null">Effect of the statement: `Allow` or `Deny`.</ParamField>
+    <ParamField name="resources" type="list(string)" default="null">List of ARNs the statement applies to.</ParamField>
+    <ParamField name="not_resources" type="list(string)" default="null">List of ARNs the statement explicitly does not apply to.</ParamField>
+    <ParamField name="principals" type="list(object)" default="null">List of principals the statement applies to.</ParamField>
+    <ParamField name="not_principals" type="list(object)" default="null">List of principals the statement explicitly does not apply to.</ParamField>
+    <ParamField name="condition" type="list(object)" default="null">List of conditions for the statement.</ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Outputs
+
+### IAM Role
+
+<ResponseField name="iam_role_name" type="string">
+  The name of the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_arn" type="string">
+  The Amazon Resource Name (ARN) specifying the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_unique_id" type="string">
+  Stable and unique string identifying the IAM role.
+</ResponseField>
+
+### Fargate Profile
+
+<ResponseField name="fargate_profile_arn" type="string">
+  Amazon Resource Name (ARN) of the EKS Fargate Profile.
+</ResponseField>
+
+<ResponseField name="fargate_profile_id" type="string">
+  EKS Cluster name and EKS Fargate Profile name separated by a colon (`:`).
+</ResponseField>
+
+<ResponseField name="fargate_profile_status" type="string">
+  Status of the EKS Fargate Profile.
+</ResponseField>
+
+<ResponseField name="fargate_profile_pod_execution_role_arn" type="string">
+  Amazon Resource Name (ARN) of the EKS Fargate Profile Pod execution role ARN.
+</ResponseField>

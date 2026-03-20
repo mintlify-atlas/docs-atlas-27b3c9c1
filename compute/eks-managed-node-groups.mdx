@@ -1,0 +1,332 @@
+---
+title: EKS Managed Node Groups
+description: Configure EKS managed node groups with custom launch templates, supported AMI types, node repair, and EFA support using the terraform-aws-eks module.
+---
+
+EKS managed node groups are Auto Scaling Groups where AWS handles the node provisioning, updates, and termination lifecycle. You define the desired configuration and EKS coordinates rolling updates without requiring manual drain/cordon operations.
+
+Refer to the [AWS EKS Managed Node Group documentation](https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html) for service-level details.
+
+## Custom launch template
+
+The module creates a custom launch template by default (`use_custom_launch_template = true`). This ensures settings such as tags, metadata options, and EBS configurations are propagated correctly to the underlying EC2 instances. Many advanced customization options are only available when using a custom launch template.
+
+To use the default template provided by the EKS service instead:
+
+```hcl
+eks_managed_node_groups = {
+  default = {
+    use_custom_launch_template = false
+  }
+}
+```
+
+<Warning>
+  When `use_custom_launch_template = false`, the `disk_size` and `remote_access` fields become available but most other launch template customization options are unavailable. The `disk_size` variable is **only valid** when `use_custom_launch_template = false` — when using the custom launch template, configure disk size via `block_device_mappings` instead.
+</Warning>
+
+## Supported AMI types
+
+The `ami_type` variable controls which Amazon Machine Image variant nodes use. The default is `AL2023_x86_64_STANDARD` (starting from Kubernetes 1.30).
+
+| AMI Type | Description |
+|---|---|
+| `AL2023_x86_64_STANDARD` | Amazon Linux 2023, x86_64 (default) |
+| `AL2023_ARM_64_STANDARD` | Amazon Linux 2023, ARM64 (Graviton) |
+| `AL2023_x86_64_NVIDIA` | Amazon Linux 2023, x86_64 with NVIDIA GPU drivers |
+| `AL2023_x86_64_NEURON` | Amazon Linux 2023, x86_64 with AWS Neuron (Inferentia/Trainium) |
+| `BOTTLEROCKET_x86_64` | Bottlerocket OS, x86_64 |
+| `BOTTLEROCKET_ARM_64` | Bottlerocket OS, ARM64 |
+| `BOTTLEROCKET_x86_64_NVIDIA` | Bottlerocket OS, x86_64 with NVIDIA GPU drivers |
+| `BOTTLEROCKET_ARM_64_NVIDIA` | Bottlerocket OS, ARM64 with NVIDIA GPU drivers |
+| `WINDOWS_CORE_2019_x86_64` | Windows Server 2019 Core |
+| `WINDOWS_FULL_2019_x86_64` | Windows Server 2019 Full |
+| `WINDOWS_CORE_2022_x86_64` | Windows Server 2022 Core |
+| `WINDOWS_FULL_2022_x86_64` | Windows Server 2022 Full |
+| `CUSTOM` | Custom AMI (requires `ami_id`) |
+
+## Basic configuration
+
+The core sizing variables for a managed node group are:
+
+```hcl
+eks_managed_node_groups = {
+  example = {
+    ami_type       = "AL2023_x86_64_STANDARD"
+    instance_types = ["m5.xlarge"]
+
+    min_size     = 2
+    max_size     = 10
+    desired_size = 2
+  }
+}
+```
+
+<Note>
+  `desired_size` is ignored after the initial creation to avoid conflicts with external autoscalers. See the [eks-desired-size-hack](https://github.com/bryantbiggs/eks-desired-size-hack) for managing this in Terraform.
+</Note>
+
+## Examples
+
+<Tabs>
+  <Tab title="AL2023 (default)">
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+
+      name               = "my-cluster"
+      kubernetes_version = "1.33"
+
+      addons = {
+        coredns = {}
+        eks-pod-identity-agent = {
+          before_compute = true
+        }
+        kube-proxy = {}
+        vpc-cni = {
+          before_compute = true
+        }
+      }
+
+      vpc_id     = module.vpc.vpc_id
+      subnet_ids = module.vpc.private_subnets
+
+      eks_managed_node_groups = {
+        example = {
+          instance_types = ["m6i.large"]
+          ami_type       = "AL2023_x86_64_STANDARD"
+
+          min_size     = 2
+          max_size     = 5
+          desired_size = 2
+
+          # Optional: pass additional nodeadm configuration
+          cloudinit_pre_nodeadm = [
+            {
+              content_type = "application/node.eks.aws"
+              content      = <<-EOT
+                ---
+                apiVersion: node.eks.aws/v1alpha1
+                kind: NodeConfig
+                spec:
+                  kubelet:
+                    config:
+                      shutdownGracePeriod: 30s
+              EOT
+            }
+          ]
+        }
+      }
+
+      tags = {
+        Environment = "dev"
+        Terraform   = "true"
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Bottlerocket">
+    ```hcl
+    eks_managed_node_groups = {
+      bottlerocket_default = {
+        use_custom_launch_template = false
+
+        ami_type = "BOTTLEROCKET_x86_64"
+      }
+    }
+    ```
+
+    Bottlerocket with extra settings (user data uses TOML format):
+
+    ```hcl
+    eks_managed_node_groups = {
+      bottlerocket = {
+        ami_type       = "BOTTLEROCKET_x86_64"
+        instance_types = ["m6i.large"]
+
+        min_size     = 2
+        max_size     = 5
+        desired_size = 2
+
+        bootstrap_extra_args = <<-EOT
+          # The admin host container provides SSH access and runs with "superpowers".
+          [settings.host-containers.admin]
+          enabled = false
+
+          # The control host container provides out-of-band access via SSM.
+          [settings.host-containers.control]
+          enabled = true
+
+          # extra args added
+          [settings.kernel]
+          lockdown = "integrity"
+        EOT
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Custom AMI">
+    When using a custom AMI, the EKS service does not inject the bootstrap script automatically. Enable `enable_bootstrap_user_data` to use the module's built-in template:
+
+    ```hcl
+    eks_managed_node_groups = {
+      custom_ami = {
+        ami_id   = "ami-0caf35bc73450c396"
+        ami_type = "AL2023_x86_64_STANDARD"
+
+        # Re-enable the bootstrap script for custom AMIs
+        enable_bootstrap_user_data = true
+
+        cloudinit_pre_nodeadm = [{
+          content      = <<-EOT
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              kubelet:
+                config:
+                  shutdownGracePeriod: 30s
+          EOT
+          content_type = "application/node.eks.aws"
+        }]
+
+        # Only available when ami_id is specified
+        cloudinit_post_nodeadm = [{
+          content      = <<-EOT
+            echo "All done"
+          EOT
+          content_type = "text/x-shellscript; charset=\"us-ascii\""
+        }]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Custom AMI + Bottlerocket">
+    ```hcl
+    eks_managed_node_groups = {
+      bottlerocket_custom_ami = {
+        ami_id   = "ami-0ff61e0bcfc81dc94"
+        ami_type = "BOTTLEROCKET_x86_64"
+
+        enable_bootstrap_user_data = true
+        bootstrap_extra_args = <<-EOT
+          # extra args added
+          [settings.kernel]
+          lockdown = "integrity"
+
+          [settings.kubernetes.node-labels]
+          "label1" = "foo"
+          "label2" = "bar"
+
+          [settings.kubernetes.node-taints]
+          "dedicated" = "experimental:PreferNoSchedule"
+          "special" = "true:NoSchedule"
+        EOT
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Node repair configuration
+
+EKS managed node groups support automatic node repair. When enabled, EKS monitors node health and replaces nodes that become unhealthy. The module exposes the full `node_repair_config` object:
+
+```hcl
+eks_managed_node_groups = {
+  example = {
+    instance_types = ["m6i.large"]
+    min_size       = 2
+    max_size       = 10
+    desired_size   = 2
+
+    node_repair_config = {
+      enabled = true
+
+      # Optional: fine-tune repair behavior
+      max_parallel_nodes_repaired_percentage  = 10
+      max_unhealthy_node_threshold_percentage = 20
+    }
+  }
+}
+```
+
+## EFA support
+
+Elastic Fabric Adapter (EFA) enables high-bandwidth, low-latency networking for tightly-coupled distributed workloads such as large-scale ML training.
+
+EFA must be enabled at both the cluster level and on each node group that should use it:
+
+1. The cluster-level `enable_efa_support = true` adds the required EFA ingress/egress rules to the shared node security group.
+2. The node group-level `enable_efa_support = true` does the following per node group:
+   - Exposes all EFA interfaces supported by the selected instance type on the launch template
+   - Creates a placement group with `strategy = "clustered"` per EFA requirements
+   - Restricts subnets to only availability zones that support the selected instance type
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # Adds EFA security group rules to the shared node security group
+  enable_efa_support = true
+
+  eks_managed_node_groups = {
+    example = {
+      # AL2023 NVIDIA AMI includes all necessary EFA components
+      ami_type       = "AL2023_x86_64_NVIDIA"
+      instance_types = ["p5.48xlarge"]
+
+      # Exposes all 32 EFA interfaces for p5.48xlarge
+      enable_efa_support = true
+
+      # Mount instance store volumes in RAID-0 for kubelet and containerd
+      cloudinit_pre_nodeadm = [
+        {
+          content_type = "application/node.eks.aws"
+          content      = <<-EOT
+            ---
+            apiVersion: node.eks.aws/v1alpha1
+            kind: NodeConfig
+            spec:
+              instance:
+                localStorage:
+                  strategy: RAID0
+          EOT
+        }
+      ]
+
+      # EFA requires 2 or more nodes - do not use on single-node workloads
+      min_size     = 2
+      max_size     = 10
+      desired_size = 2
+    }
+  }
+
+  # ... vpc_id, subnet_ids, etc.
+}
+```
+
+<Tip>
+  Use the [aws-efa-k8s-device-plugin](https://github.com/aws/eks-charts/tree/master/stable/aws-efa-k8s-device-plugin) Helm chart to expose EFA interfaces on nodes as extended resources and allow pods to request them. The EKS AL2 GPU AMI ships with the necessary EFA components pre-installed.
+</Tip>
+
+<Note>
+  For managed node groups with multiple instance types, the first type in the `instance_types` list is used to calculate the number of EFA interfaces. Mixing instance types with different EFA interface counts is not recommended.
+</Note>
+
+## Key variables reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `min_size` | `1` | Minimum number of nodes in the group |
+| `max_size` | `3` | Maximum number of nodes in the group |
+| `desired_size` | `1` | Initial desired node count (ignored after creation) |
+| `ami_type` | `AL2023_x86_64_STANDARD` | AMI family for nodes |
+| `instance_types` | `["t3.medium"]` | List of instance types |
+| `capacity_type` | `ON_DEMAND` | `ON_DEMAND` or `SPOT` |
+| `use_custom_launch_template` | `true` | Use module-managed launch template |
+| `disk_size` | `null` | Root volume size in GiB (only with `use_custom_launch_template = false`) |
+| `enable_bootstrap_user_data` | `false` | Re-enable bootstrap script for custom AMIs |
+| `enable_efa_support` | `false` | Enable EFA networking interfaces |

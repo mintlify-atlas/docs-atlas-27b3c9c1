@@ -1,0 +1,314 @@
+---
+title: Frequently Asked Questions
+description: Answers to common questions about configuring and operating the terraform-aws-eks module.
+---
+
+<AccordionGroup>
+
+  <Accordion title="Setting disk_size or remote_access does not make any changes">
+    `disk_size` and `remote_access` can only be set when using the EKS managed node group **default** launch template. This module defaults to providing a custom launch template to allow for custom security groups, tag propagation, and other advanced configurations.
+
+    If you wish to use these settings, you must opt out of the custom launch template:
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      eks_managed_node_groups = {
+        example = {
+          use_custom_launch_template = false
+
+          disk_size = 50
+
+          remote_access = {
+            ec2_ssh_key = "my-key-pair"
+          }
+        }
+      }
+    }
+    ```
+
+    Setting `use_custom_launch_template = false` disables the module-managed launch template and falls back to the EKS-managed default, which supports `disk_size` and `remote_access` directly.
+  </Accordion>
+
+  <Accordion title='I received an error: "expect exactly one securityGroup tagged with kubernetes.io/cluster/&lt;CLUSTER_NAME&gt; ..."'>
+    By default, EKS creates a cluster primary security group outside of the module. The EKS service automatically adds the tag `{ "kubernetes.io/cluster/<CLUSTER_NAME>" = "owned" }` to it. This does not cause conflicts on its own.
+
+    The conflict arises when you attach **both** the cluster primary security group **and** the shared node security group created by the module (by setting `attach_cluster_primary_security_group = true`) to nodes in the same cluster. Having multiple security groups with this tag key-value pair attached to nodes in the same cluster triggers the error.
+
+    There are two ways to resolve this:
+
+    **Option 1 — Use only the cluster primary security group** (disable the shared node security group):
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      create_node_security_group = false # default is true
+
+      eks_managed_node_groups = {
+        example = {
+          attach_cluster_primary_security_group = true # default is false
+        }
+      }
+
+      # Or for self-managed node groups
+      self_managed_node_groups = {
+        example = {
+          attach_cluster_primary_security_group = true # default is false
+        }
+      }
+    }
+    ```
+
+    **Option 2 — Do not attach the cluster primary security group** (recommended for tighter security):
+
+    The module's shared node security group provides the minimum access required to launch an empty EKS cluster. The cluster primary security group has quite broad access, so this option provides a better security posture.
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      eks_managed_node_groups = {
+        example = {
+          attach_cluster_primary_security_group = false # this is already the default
+        }
+      }
+    }
+    ```
+
+    <Note>
+      If you are using [Custom Networking](https://docs.aws.amazon.com/eks/latest/userguide/cni-custom-network.html), make sure to attach only the security groups matching your chosen option in your `ENIConfig` resources to avoid redundant tags.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Why are nodes not being registered?">
+    Nodes failing to register with the EKS control plane is generally caused by networking misconfiguration. Work through the following checklist:
+
+    **1. At least one cluster endpoint must be enabled.**
+
+    If a public endpoint is required, enabling both public and private endpoints while restricting the public endpoint via `endpoint_public_access_cidrs` is recommended.
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      endpoint_private_access       = true
+      endpoint_public_access        = true
+      endpoint_public_access_cidrs  = ["203.0.113.0/24"]
+    }
+    ```
+
+    **2. Nodes must be able to reach the EKS cluster endpoint.**
+
+    By default the module creates only a public endpoint. Nodes require outbound internet access to contact it:
+
+    - **Nodes in private subnets** — a NAT gateway or NAT instance with the appropriate routing rules is required.
+    - **Nodes in public subnets** — nodes must be launched with public IPs (enabled via the module or your subnet defaults).
+
+    <Warning>
+      If you enable only the public endpoint and restrict access via `endpoint_public_access_cidrs`, EKS nodes also use the public endpoint. You must include the node IP ranges in the allowed CIDRs, otherwise nodes will fail to function correctly.
+    </Warning>
+
+    **3. Enable the private endpoint when nodes should not use the public internet.**
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      endpoint_private_access = true
+    }
+    ```
+
+    When the private endpoint is enabled, ensure that **VPC DNS resolution** and **VPC DNS hostnames** are also enabled for your VPC.
+
+    **4. Nodes need access to other AWS services.**
+
+    Nodes need to download container images, make API calls to assume roles, and so on. If outbound internet access is not available, add VPC endpoints for the following services:
+
+    - EC2 API (`com.amazonaws.<region>.ec2`)
+    - ECR API (`com.amazonaws.<region>.ecr.api`)
+    - ECR DKR (`com.amazonaws.<region>.ecr.dkr`)
+    - S3 (`com.amazonaws.<region>.s3`)
+  </Accordion>
+
+  <Accordion title="Why are there no changes when a node group's desired_size is modified?">
+    The module intentionally ignores changes to `desired_size` via a Terraform `lifecycle` block. Unfortunately, Terraform does not support variables within `lifecycle` blocks, so this cannot be made configurable.
+
+    The setting is ignored to allow cluster autoscaling tools — such as [Cluster Autoscaler](https://github.com/kubernetes/autoscaler) or [Karpenter](https://karpenter.sh/) — to manage the node count without Terraform constantly overriding their decisions.
+
+    Once the node group is created, changes to `desired_size` must be made outside of Terraform (for example, via the AWS console, CLI, or your autoscaler).
+
+    <Tip>
+      See [this workaround](https://github.com/bryantbiggs/eks-desired-size-hack) for a Terraform-based approach to forcing a `desired_size` update when absolutely necessary.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="How do I access compute resource attributes?">
+    The root module exposes the attributes of each compute resource type through output maps. The examples below assume your cluster module block is named `eks` (i.e., `module "eks" { ... }`).
+
+    **EKS Managed Node Group attributes:**
+
+    ```hcl
+    eks_managed_role_arns = [for group in module.eks.eks_managed_node_groups : group.iam_role_arn]
+    ```
+
+    **Self-Managed Node Group attributes:**
+
+    ```hcl
+    self_managed_role_arns = [for group in module.eks.self_managed_node_groups : group.iam_role_arn]
+    ```
+
+    **Fargate Profile attributes:**
+
+    ```hcl
+    fargate_profile_pod_execution_role_arns = [for group in module.eks.fargate_profiles : group.fargate_profile_pod_execution_role_arn]
+    ```
+
+    You can iterate over any output attribute of the respective sub-modules using this pattern.
+  </Accordion>
+
+  <Accordion title="What add-ons are available?">
+    The full list of available EKS add-ons is maintained in the [AWS documentation](https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html).
+
+    You can also retrieve the current list directly from the API:
+
+    ```bash
+    aws eks describe-addon-versions --query 'addons[*].addonName'
+    ```
+
+    This returns all add-on names available in your current AWS region and account.
+  </Accordion>
+
+  <Accordion title="What configuration values are available for an add-on?">
+    <Note>
+      The available configuration values vary between add-on versions. Typically, later versions expose more configuration options as EKS enables additional functionality.
+    </Note>
+
+    You can retrieve the JSON Schema for the configuration of a specific add-on version using:
+
+    ```bash
+    aws eks describe-addon-configuration \
+      --addon-name <value> \
+      --addon-version <value> \
+      --query 'configurationSchema' \
+      --output text | jq
+    ```
+
+    **Example — querying the CoreDNS add-on schema:**
+
+    ```bash
+    aws eks describe-addon-configuration \
+      --addon-name coredns \
+      --addon-version v1.11.1-eksbuild.8 \
+      --query 'configurationSchema' \
+      --output text | jq
+    ```
+
+    This returns the full JSON Schema describing all available configuration fields. For example, for the `coredns` add-on at the time of writing:
+
+    ```json
+    {
+      "$ref": "#/definitions/Coredns",
+      "$schema": "http://json-schema.org/draft-06/schema#",
+      "definitions": {
+        "Coredns": {
+          "additionalProperties": false,
+          "properties": {
+            "affinity": {
+              "description": "Affinity of the coredns pods",
+              "type": ["object", "null"]
+            },
+            "computeType": {
+              "type": "string"
+            },
+            "corefile": {
+              "description": "Entire corefile contents to use with installation",
+              "type": "string"
+            },
+            "nodeSelector": {
+              "additionalProperties": { "type": "string" },
+              "type": "object"
+            },
+            "podAnnotations": {
+              "title": "The podAnnotations Schema",
+              "type": "object"
+            },
+            "podDisruptionBudget": {
+              "description": "podDisruptionBudget configurations",
+              "type": "object"
+            },
+            "podLabels": {
+              "title": "The podLabels Schema",
+              "type": "object"
+            },
+            "replicaCount": {
+              "type": "integer"
+            },
+            "resources": {
+              "$ref": "#/definitions/Resources"
+            },
+            "tolerations": {
+              "description": "Tolerations of the coredns pod",
+              "items": { "type": "object" },
+              "type": "array"
+            },
+            "topologySpreadConstraints": {
+              "description": "The coredns pod topology spread constraints",
+              "type": "array"
+            }
+          },
+          "title": "Coredns",
+          "type": "object"
+        },
+        "Resources": {
+          "additionalProperties": false,
+          "properties": {
+            "limits": { "$ref": "#/definitions/Limits" },
+            "requests": { "$ref": "#/definitions/Limits" }
+          },
+          "title": "Resources",
+          "type": "object"
+        },
+        "Limits": {
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          },
+          "title": "Limits",
+          "type": "object"
+        }
+      }
+    }
+    ```
+
+    Once you have the schema, you can supply configuration values to the add-on in your module definition:
+
+    ```hcl
+    module "eks" {
+      # ...
+
+      addons = {
+        coredns = {
+          addon_version     = "v1.11.1-eksbuild.8"
+          configuration_values = jsonencode({
+            replicaCount = 4
+            resources = {
+              limits = {
+                cpu    = "100m"
+                memory = "150Mi"
+              }
+              requests = {
+                cpu    = "100m"
+                memory = "150Mi"
+              }
+            }
+          })
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+</AccordionGroup>

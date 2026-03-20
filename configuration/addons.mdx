@@ -1,0 +1,343 @@
+---
+title: EKS Add-ons
+description: Install and configure EKS managed add-ons including CoreDNS, kube-proxy, VPC CNI, and EKS Pod Identity Agent with version pinning and custom configuration.
+---
+
+EKS managed add-ons are operational software components for the cluster that AWS manages, patches, and updates. The module installs add-ons through the `addons` variable.
+
+## Supported Add-ons
+
+Common add-ons managed through this module:
+
+| Add-on Name | Description |
+|---|---|
+| `coredns` | DNS server for service discovery inside the cluster |
+| `kube-proxy` | Network proxy that maintains network rules on nodes |
+| `vpc-cni` | Amazon VPC CNI plugin for pod networking |
+| `eks-pod-identity-agent` | Agent that enables EKS Pod Identity for IAM role assumption |
+
+<Note>
+To list all available add-ons for your cluster version, run:
+```bash
+aws eks describe-addon-versions --query 'addons[*].addonName'
+```
+</Note>
+
+---
+
+## Basic Add-on Configuration
+
+Add-ons are configured as a map where the key is the add-on name. An empty object `{}` installs the add-on with defaults (`most_recent = true`).
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  addons = {
+    coredns                = {}
+    kube-proxy             = {}
+    vpc-cni                = {}
+    eks-pod-identity-agent = {}
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+---
+
+## `before_compute` Flag
+
+Some add-ons must be installed before any nodes join the cluster. Set `before_compute = true` on these add-ons to ensure they are created before node groups or Fargate profiles.
+
+```hcl
+addons = {
+  coredns = {}
+
+  # vpc-cni must be present before nodes launch to configure pod networking
+  vpc-cni = {
+    before_compute = true
+  }
+
+  # eks-pod-identity-agent must be present before nodes need Pod Identity
+  eks-pod-identity-agent = {
+    before_compute = true
+  }
+
+  kube-proxy = {}
+}
+```
+
+<Warning>
+Add-ons with `before_compute = true` are created using a separate `aws_eks_addon.before_compute` resource that has an explicit dependency on the cluster being active but **before** any `dataplane_wait_duration` delay. Add-ons without this flag wait for the dataplane wait period to complete.
+</Warning>
+
+---
+
+## Version Management
+
+### Most Recent Version (Default)
+
+By default, `most_recent = true` installs the latest available version of each add-on at apply time.
+
+```hcl
+addons = {
+  coredns = {
+    most_recent = true  # default
+  }
+}
+```
+
+### Pinned Version
+
+Pin to a specific add-on version by setting `addon_version`. This prevents unexpected updates:
+
+```hcl
+addons = {
+  coredns = {
+    most_recent   = false
+    addon_version = "v1.11.1-eksbuild.8"
+  }
+  vpc-cni = {
+    most_recent   = false
+    addon_version = "v1.18.1-eksbuild.3"
+  }
+}
+```
+
+---
+
+## Conflict Resolution
+
+Control how the EKS service handles conflicts between add-on managed configuration and any custom configuration that exists in the cluster.
+
+| Variable | Default | Options |
+|---|---|---|
+| `resolve_conflicts_on_create` | `"NONE"` | `"NONE"`, `"OVERWRITE"` |
+| `resolve_conflicts_on_update` | `"OVERWRITE"` | `"NONE"`, `"OVERWRITE"`, `"PRESERVE"` |
+
+```hcl
+addons = {
+  coredns = {
+    resolve_conflicts_on_create = "OVERWRITE"
+    resolve_conflicts_on_update = "OVERWRITE"
+  }
+}
+```
+
+---
+
+## Custom Configuration Values
+
+Pass a JSON string to `configuration_values` to override add-on settings. The available schema is add-on and version specific.
+
+### Discover the Configuration Schema
+
+```bash
+aws eks describe-addon-configuration \
+  --addon-name coredns \
+  --addon-version v1.11.1-eksbuild.8 \
+  --query 'configurationSchema' \
+  --output text | jq
+```
+
+### CoreDNS Example
+
+```hcl
+addons = {
+  coredns = {
+    configuration_values = jsonencode({
+      replicaCount = 3
+      resources = {
+        limits = {
+          cpu    = "100m"
+          memory = "150Mi"
+        }
+        requests = {
+          cpu    = "100m"
+          memory = "70Mi"
+        }
+      }
+    })
+  }
+}
+```
+
+### VPC CNI Example
+
+```hcl
+addons = {
+  vpc-cni = {
+    before_compute = true
+    configuration_values = jsonencode({
+      env = {
+        ENABLE_PREFIX_DELEGATION = "true"
+        WARM_PREFIX_TARGET       = "1"
+      }
+    })
+  }
+}
+```
+
+---
+
+## Pod Identity Association
+
+EKS Pod Identity is the recommended way to grant add-ons IAM permissions without IRSA. Use `pod_identity_association` inside an add-on block to associate an IAM role with the add-on's service account.
+
+```hcl
+resource "aws_iam_role" "vpc_cni" {
+  name = "vpc-cni-pod-identity"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "vpc_cni" {
+  role       = aws_iam_role.vpc_cni.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  addons = {
+    vpc-cni = {
+      before_compute = true
+      pod_identity_association = [
+        {
+          role_arn        = aws_iam_role.vpc_cni.arn
+          service_account = "aws-node"
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## `preserve` Flag
+
+The `preserve` flag (default `true`) controls whether the add-on is preserved on the cluster when Terraform destroys the add-on resource. When `true`, the add-on is not removed from the cluster on destroy, preventing disruption to running workloads.
+
+```hcl
+addons = {
+  coredns = {
+    preserve = true   # default — add-on stays on cluster when TF resource is destroyed
+  }
+  kube-proxy = {
+    preserve = false  # add-on is removed when TF resource is destroyed
+  }
+}
+```
+
+---
+
+## Full Example: EKS Managed Node Group with Add-ons
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  endpoint_public_access = true
+  enable_cluster_creator_admin_permissions = true
+
+  addons = {
+    coredns = {
+      most_recent          = true
+      configuration_values = jsonencode({
+        replicaCount = 2
+      })
+    }
+
+    kube-proxy = {}
+
+    vpc-cni = {
+      before_compute = true
+      most_recent    = true
+      configuration_values = jsonencode({
+        env = {
+          ENABLE_PREFIX_DELEGATION = "true"
+          WARM_PREFIX_TARGET       = "1"
+        }
+      })
+    }
+
+    eks-pod-identity-agent = {
+      before_compute = true
+      most_recent    = true
+    }
+  }
+
+  vpc_id                   = "vpc-1234556abcdef"
+  subnet_ids               = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+  control_plane_subnet_ids = ["subnet-xyzde987", "subnet-slkjf456", "subnet-qeiru789"]
+
+  eks_managed_node_groups = {
+    default = {
+      ami_type       = "AL2023_x86_64_STANDARD"
+      instance_types = ["m5.xlarge"]
+      min_size       = 2
+      max_size       = 10
+      desired_size   = 2
+    }
+  }
+
+  tags = {
+    Environment = "production"
+    Terraform   = "true"
+  }
+}
+```
+
+---
+
+## Add-on Variable Reference
+
+```hcl
+addons = {
+  "<addon-name>" = {
+    name                        = optional(string)  # overrides map key
+    before_compute              = optional(bool, false)
+    most_recent                 = optional(bool, true)
+    addon_version               = optional(string)
+    configuration_values        = optional(string)  # JSON string
+    preserve                    = optional(bool, true)
+    resolve_conflicts_on_create = optional(string, "NONE")
+    resolve_conflicts_on_update = optional(string, "OVERWRITE")
+    service_account_role_arn    = optional(string)  # for IRSA
+
+    pod_identity_association = optional(list(object({
+      role_arn        = string
+      service_account = string
+    })))
+
+    timeouts = optional(object({
+      create = optional(string)
+      update = optional(string)
+      delete = optional(string)
+    }))
+
+    tags = optional(map(string), {})
+  }
+}
+```

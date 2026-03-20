@@ -1,0 +1,350 @@
+---
+title: Network Connectivity
+description: Configure cluster endpoint access, security groups, VPC requirements, subnet placement, and IP family for your EKS cluster.
+---
+
+## Cluster Endpoint Access
+
+EKS exposes a Kubernetes API server endpoint for the cluster. You control who can reach that endpoint through two variables.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `endpoint_private_access` | `bool` | `true` | Enable the private API server endpoint inside your VPC |
+| `endpoint_public_access` | `bool` | `false` | Enable the public API server endpoint reachable from the internet |
+| `endpoint_public_access_cidrs` | `list(string)` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the public endpoint |
+
+<Warning>
+At least one endpoint (public **or** private) must be enabled at all times. The module defaults to private-only access (`endpoint_private_access = true`, `endpoint_public_access = false`).
+</Warning>
+
+### Endpoint Configurations
+
+<Tabs>
+  <Tab title="Private Only (default)">
+    Nodes communicate with the control plane entirely within your VPC. No public internet exposure for the API server.
+
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+
+      name               = "my-cluster"
+      kubernetes_version = "1.33"
+
+      # Default — private endpoint only
+      endpoint_private_access = true
+      endpoint_public_access  = false
+
+      vpc_id     = "vpc-1234556abcdef"
+      subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+    }
+    ```
+
+    <Note>
+    Ensure VPC DNS resolution and DNS hostnames are enabled when using the private endpoint. Nodes must be able to resolve the private endpoint hostname.
+    </Note>
+  </Tab>
+
+  <Tab title="Public Only">
+    The API server is reachable from the internet. Nodes in public subnets need public IPs; nodes in private subnets need a NAT gateway to reach the endpoint.
+
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+
+      name               = "my-cluster"
+      kubernetes_version = "1.33"
+
+      endpoint_private_access = false
+      endpoint_public_access  = true
+
+      vpc_id     = "vpc-1234556abcdef"
+      subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+    }
+    ```
+  </Tab>
+
+  <Tab title="Public + Private (Recommended)">
+    Both endpoints are active. Internal traffic (nodes, pods) uses the private endpoint; external kubectl access uses the public endpoint.
+
+    ```hcl
+    module "eks" {
+      source  = "terraform-aws-modules/eks/aws"
+      version = "~> 21.0"
+
+      name               = "my-cluster"
+      kubernetes_version = "1.33"
+
+      endpoint_private_access      = true
+      endpoint_public_access       = true
+      endpoint_public_access_cidrs = ["203.0.113.0/24", "198.51.100.10/32"]
+
+      vpc_id     = "vpc-1234556abcdef"
+      subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Restricting Public Access CIDRs
+
+When `endpoint_public_access = true`, you can restrict which IP addresses are allowed to reach the API server by setting `endpoint_public_access_cidrs`. When you restrict access this way, you **must** also ensure that your nodes and Fargate pods are included in the allowed CIDRs (or use the private endpoint alongside it), because EKS nodes also contact the public endpoint to register with the cluster.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  endpoint_public_access       = true
+  endpoint_private_access      = true  # recommended alongside CIDR restriction
+  endpoint_public_access_cidrs = [
+    "203.0.113.5/32",   # developer VPN egress
+    "198.51.100.0/24",  # office network
+  ]
+
+  # ...
+}
+```
+
+<Warning>
+If you restrict `endpoint_public_access_cidrs` and do **not** enable the private endpoint, your nodes will fail to register because they cannot reach the public API server from addresses outside the allowed CIDRs.
+</Warning>
+
+---
+
+## Subnet Configuration
+
+The module distinguishes between two subnet variables that serve different purposes.
+
+| Variable | Purpose |
+|---|---|
+| `subnet_ids` | Subnets where node groups and Fargate profiles will be launched |
+| `control_plane_subnet_ids` | Subnets where EKS provisions the control plane ENIs |
+
+If `control_plane_subnet_ids` is not provided, the control plane ENIs are placed in `subnet_ids`. Providing separate control plane subnets lets you expand the node subnet pool later without replacing the control plane.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  vpc_id = "vpc-1234556abcdef"
+
+  # Control plane ENIs go here — stable, cross-AZ subnets
+  control_plane_subnet_ids = ["subnet-xyzde987", "subnet-slkjf456", "subnet-qeiru789"]
+
+  # Node groups launch here — can span more subnets over time
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+---
+
+## Security Group Architecture
+
+The module creates two security groups by default:
+
+<CardGroup cols={2}>
+  <Card title="Cluster Security Group" icon="shield">
+    An "additional" security group attached to the cluster control plane. Allows customizing inbound and outbound rules for control-plane-to-node communication. Defaults include the AWS minimum recommendations plus NTP and HTTPS egress.
+  </Card>
+  <Card title="Node Security Group" icon="server">
+    A shared security group attached to all node groups created by the module. Provides the minimum access needed for nodes to join the cluster. Enable recommended rules with `node_security_group_enable_recommended_rules`.
+  </Card>
+</CardGroup>
+
+### Extending the Cluster Security Group
+
+Use `security_group_additional_rules` to add rules to the cluster security group. Set `source_node_security_group = true` to reference the node security group as the source.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  security_group_additional_rules = {
+    egress_nodes_ephemeral_ports_tcp = {
+      description                = "To node 1025-65535"
+      protocol                   = "tcp"
+      from_port                  = 1025
+      to_port                    = 65535
+      type                       = "egress"
+      source_node_security_group = true
+    }
+  }
+}
+```
+
+### Extending the Node Security Group
+
+Use `node_security_group_additional_rules` to open up node-to-node communication or allow traffic from specific sources. Set `source_cluster_security_group = true` to reference the cluster security group.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
+    egress_all = {
+      description      = "Node all egress"
+      protocol         = "-1"
+      from_port        = 0
+      to_port          = 0
+      type             = "egress"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+  }
+}
+```
+
+### Bringing Your Own Security Groups
+
+You can disable the module-managed security groups and supply externally created ones instead.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # Disable module-managed cluster security group
+  create_security_group = false
+  security_group_id     = "sg-0abc123def456"  # your own SG
+
+  # Disable module-managed node security group
+  create_node_security_group = false
+  node_security_group_id     = "sg-0xyz789abc012"  # your own node SG
+
+  # Optionally attach the EKS-service-managed primary security group to nodes
+  eks_managed_node_groups = {
+    example = {
+      attach_cluster_primary_security_group = true
+    }
+  }
+
+  # ...
+}
+```
+
+You can also attach additional externally created security groups to the control plane without disabling the module-managed one:
+
+```hcl
+module "eks" {
+  additional_security_group_ids = ["sg-0abc123", "sg-0def456"]
+  # ...
+}
+```
+
+---
+
+## IP Family
+
+The `ip_family` variable controls whether pods and services receive IPv4 or IPv6 addresses.
+
+| Value | Behavior |
+|---|---|
+| `ipv4` (default) | Standard IPv4 addressing for pods and services |
+| `ipv6` | IPv6 addressing; requires `create_cni_ipv6_iam_policy = true` |
+
+<Warning>
+`ip_family` can only be set at cluster creation time. Changing it forces replacement of the entire cluster.
+</Warning>
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-ipv6-cluster"
+  kubernetes_version = "1.33"
+
+  ip_family                 = "ipv6"
+  create_cni_ipv6_iam_policy = true
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+---
+
+## Troubleshooting: Nodes Not Registering
+
+<Accordion title="Nodes are not joining the cluster">
+Nodes failing to register with the EKS control plane is almost always a networking problem. Work through these checks in order:
+
+<Steps>
+  <Step title="Verify at least one endpoint is enabled">
+    Check that either `endpoint_public_access` or `endpoint_private_access` is `true`. Both cannot be `false`.
+  </Step>
+
+  <Step title="Check node-to-endpoint reachability">
+    - **Private subnets**: nodes need a NAT gateway (or NAT instance) and the correct route table entry to reach a public endpoint, or use the private endpoint.
+    - **Public subnets**: nodes must launch with a public IP. Enable this via the subnet default or on the launch template.
+  </Step>
+
+  <Step title="Check CIDR restrictions">
+    If `endpoint_public_access_cidrs` is set, node outbound IPs must be included. If nodes use a NAT gateway, add that gateway's Elastic IP to the allowed CIDRs.
+  </Step>
+
+  <Step title="Enable the private endpoint for internal traffic">
+    Setting `cluster_endpoint_private_access = true` allows nodes to communicate with the API server over the private network. Ensure VPC DNS resolution and DNS hostnames are enabled.
+  </Step>
+
+  <Step title="Add VPC endpoints for air-gapped environments">
+    If nodes have no public internet access at all, add VPC Interface Endpoints for: `ec2`, `ecr.api`, `ecr.dkr`, and `s3` (Gateway endpoint). This allows nodes to pull images and make API calls without internet access.
+  </Step>
+</Steps>
+</Accordion>
+
+<Accordion title="Error: expect exactly one securityGroup tagged with kubernetes.io/cluster/&lt;NAME&gt;">
+This error (commonly triggered by the AWS Load Balancer Controller) occurs when multiple security groups attached to nodes carry the same `kubernetes.io/cluster/<CLUSTER_NAME> = owned` tag.
+
+By default, EKS creates a cluster primary security group with this tag. The error appears when you also attach the module-created node security group *and* set `attach_cluster_primary_security_group = true`, resulting in two tagged security groups on the same nodes.
+
+**Resolution — choose one approach:**
+
+**Option 1**: Disable the module node security group and use the cluster primary SG only:
+
+```hcl
+module "eks" {
+  create_node_security_group = false
+
+  eks_managed_node_groups = {
+    example = {
+      attach_cluster_primary_security_group = true
+    }
+  }
+}
+```
+
+**Option 2**: Do not attach the cluster primary security group (keep only the module node SG):
+
+```hcl
+module "eks" {
+  eks_managed_node_groups = {
+    example = {
+      # attach_cluster_primary_security_group = false  (this is the default)
+    }
+  }
+}
+```
+
+If using Custom Networking, ensure your `ENIConfig` resources only reference the security group matching your chosen approach.
+</Accordion>

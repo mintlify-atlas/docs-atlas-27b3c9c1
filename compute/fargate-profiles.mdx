@@ -1,0 +1,218 @@
+---
+title: Fargate Profiles
+description: Run serverless Kubernetes pods on AWS Fargate using Fargate profiles in the terraform-aws-eks module. Configure selectors, IAM roles, and pod scheduling.
+---
+
+Fargate profiles allow you to run Kubernetes pods on AWS Fargate — a serverless compute engine that provisions and manages isolated compute for each pod. There are no EC2 nodes to provision, patch, or manage.
+
+When a pod is scheduled, Kubernetes checks whether any Fargate profile selectors match the pod's namespace and labels. If a match is found, the pod runs on Fargate instead of on a node.
+
+## How selectors work
+
+Each Fargate profile contains one or more selectors. A selector matches pods by:
+
+- **namespace** (required) — the Kubernetes namespace the pod runs in
+- **labels** (optional) — a map of label key-value pairs that must all be present on the pod
+
+A pod is scheduled to Fargate if it matches **any** selector in **any** active profile.
+
+## Basic example
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  fargate_profiles = {
+    default = {
+      selectors = [
+        { namespace = "default" }
+      ]
+    }
+  }
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+## Selector configuration examples
+
+<Tabs>
+  <Tab title="Namespace only">
+    Match all pods in the `kube-system` namespace:
+
+    ```hcl
+    fargate_profiles = {
+      kube-system = {
+        selectors = [
+          { namespace = "kube-system" }
+        ]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Namespace + labels">
+    Match only pods in the `apps` namespace that have the label `fargate: "true"`:
+
+    ```hcl
+    fargate_profiles = {
+      apps = {
+        selectors = [
+          {
+            namespace = "apps"
+            labels = {
+              fargate = "true"
+            }
+          }
+        ]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Multiple selectors">
+    A single profile can match pods across multiple namespaces or label combinations:
+
+    ```hcl
+    fargate_profiles = {
+      multi = {
+        selectors = [
+          { namespace = "staging" },
+          {
+            namespace = "production"
+            labels = {
+              compute = "fargate"
+            }
+          }
+        ]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Multiple profiles">
+    Define separate profiles for different teams or environments:
+
+    ```hcl
+    fargate_profiles = {
+      team-a = {
+        selectors = [
+          { namespace = "team-a" }
+        ]
+      }
+
+      team-b = {
+        selectors = [
+          { namespace = "team-b" }
+        ]
+      }
+
+      batch = {
+        selectors = [
+          {
+            namespace = "batch-jobs"
+            labels = {
+              workload-type = "batch"
+            }
+          }
+        ]
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## IAM role configuration
+
+The module creates a dedicated IAM role for each Fargate profile by default. The role is granted the `AmazonEKSFargatePodExecutionRolePolicy` and, when `iam_role_attach_cni_policy = true` (default), the `AmazonEKS_CNI_Policy` to allow the VPC CNI to configure networking for Fargate pods.
+
+To use an existing IAM role:
+
+```hcl
+fargate_profiles = {
+  example = {
+    create_iam_role  = false
+    iam_role_arn     = "arn:aws:iam::123456789012:role/my-fargate-role"
+
+    selectors = [
+      { namespace = "default" }
+    ]
+  }
+}
+```
+
+To add extra policies to the created role:
+
+```hcl
+fargate_profiles = {
+  example = {
+    iam_role_additional_policies = {
+      additional = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+    }
+
+    selectors = [
+      { namespace = "default" }
+    ]
+  }
+}
+```
+
+## Subnet configuration
+
+By default, Fargate profiles use the subnets specified at the cluster level (`subnet_ids`). To use different subnets for a specific profile:
+
+```hcl
+fargate_profiles = {
+  isolated = {
+    subnet_ids = ["subnet-private-1", "subnet-private-2"]
+
+    selectors = [
+      { namespace = "isolated-workloads" }
+    ]
+  }
+}
+```
+
+<Warning>
+  Fargate profiles require private subnets with NAT gateway access. Pods scheduled to Fargate cannot run in public subnets.
+</Warning>
+
+## Limitations and caveats
+
+<Accordion title="No DaemonSets">
+  Fargate does not support DaemonSets. Any DaemonSet pods (e.g., log collectors, monitoring agents) need to be deployed differently — typically using sidecar containers or as node-level services on EC2-based node groups.
+</Accordion>
+
+<Accordion title="No privileged containers">
+  Fargate does not support privileged containers or `hostNetwork`, `hostPID`, or `hostIPC` pod security contexts.
+</Accordion>
+
+<Accordion title="EBS volumes not supported">
+  Fargate pods cannot mount EBS volumes. Use EFS (Amazon Elastic File System) or other network-attached storage for persistent workloads on Fargate.
+</Accordion>
+
+<Accordion title="Resource limits required">
+  Each Fargate pod is allocated a dedicated vCPU and memory combination based on the pod's resource requests and limits. Always set resource `requests` on containers — Fargate uses these to select the appropriate compute configuration.
+</Accordion>
+
+<Accordion title="One pod per Fargate instance">
+  Each Fargate instance runs exactly one pod. Multi-container pods (with sidecars) run all containers on the same Fargate instance. This means bin-packing multiple pods onto a single compute unit is not possible.
+</Accordion>
+
+## Key variables reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `selectors` | `null` | List of namespace and label selectors for pod matching |
+| `subnet_ids` | `[]` | Subnets for the Fargate profile; falls back to cluster subnets |
+| `create_iam_role` | `true` | Create a dedicated IAM execution role |
+| `iam_role_arn` | `null` | ARN of an existing IAM role (when `create_iam_role = false`) |
+| `iam_role_attach_cni_policy` | `true` | Attach the EKS CNI IAM policy to the role |
+| `iam_role_additional_policies` | `{}` | Additional IAM policy ARNs to attach to the role |

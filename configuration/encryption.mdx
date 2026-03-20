@@ -1,0 +1,265 @@
+---
+title: Encryption
+description: Encrypt Kubernetes secrets and CloudWatch logs using AWS KMS keys created by the module or keys you bring yourself.
+---
+
+The module encrypts EKS cluster secrets using a KMS Customer Managed Key (CMK) by default. You can control every aspect of the key: creation, rotation, access policies, and deletion behavior. CloudWatch log group encryption is configured separately.
+
+## Default Behavior
+
+By default, the module:
+
+1. Creates a new KMS key (`create_kms_key = true`)
+2. Enables automatic key rotation (`enable_kms_key_rotation = true`)
+3. Encrypts Kubernetes `secrets` with that key
+4. Attaches an IAM policy to the cluster role allowing it to use the key
+
+---
+
+## KMS Key Creation
+
+### Module-Created Key (Default)
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  # These are all defaults — shown explicitly for clarity
+  create_kms_key          = true
+  enable_kms_key_rotation = true
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+### Bringing Your Own KMS Key
+
+Disable key creation and provide your own key ARN via `encryption_config`:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  create_kms_key = false
+
+  encryption_config = {
+    provider_key_arn = "arn:aws:kms:us-east-1:123456789012:key/mrk-1234abcd12ab34cd56ef1234567890ab"
+    resources        = ["secrets"]
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+<Note>
+When `create_kms_key = false` and `encryption_config.provider_key_arn` is set, the module still attaches an IAM policy to the cluster role to use the provided key (controlled by `attach_encryption_policy = true`).
+</Note>
+
+### Disabling Encryption
+
+To create a cluster without secrets encryption, set both `create_kms_key = false` and leave `encryption_config` empty:
+
+```hcl
+module "eks" {
+  create_kms_key    = false
+  encryption_config = {}
+}
+```
+
+---
+
+## Encrypted Resources
+
+The `encryption_config.resources` list controls which Kubernetes resources are encrypted. The only currently supported value is `secrets`.
+
+```hcl
+encryption_config = {
+  provider_key_arn = "arn:aws:kms:us-east-1:123456789012:key/..."
+  resources        = ["secrets"]  # default
+}
+```
+
+---
+
+## Key Rotation
+
+Key rotation is enabled by default. Customize the rotation schedule with `kms_key_rotation_period_in_days`.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  create_kms_key                  = true
+  enable_kms_key_rotation         = true
+  kms_key_rotation_period_in_days = 180  # must be between 90 and 2560; default is 365
+}
+```
+
+| Variable | Type | Default | Constraints |
+|---|---|---|---|
+| `enable_kms_key_rotation` | `bool` | `true` | — |
+| `kms_key_rotation_period_in_days` | `number` | `365` | 90–2560 days |
+
+---
+
+## Key Administrators, Users, and Owners
+
+The module uses the `terraform-aws-modules/kms/aws` submodule internally. You control who has access to the key through three variables:
+
+| Variable | Permission Level | Default Behavior |
+|---|---|---|
+| `kms_key_owners` | `kms:*` (full access) | `[]` — no additional owners |
+| `kms_key_administrators` | Administer the key (rotate, schedule deletion, etc.) | `[]` — falls back to current caller identity |
+| `kms_key_users` | Encrypt and decrypt operations | `[]` |
+| `kms_key_service_users` | Service integration (grants, etc.) | `[]` |
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  create_kms_key = true
+
+  kms_key_administrators = [
+    "arn:aws:iam::123456789012:role/KMSAdminRole",
+    "arn:aws:iam::123456789012:user/admin-user",
+  ]
+
+  kms_key_users = [
+    "arn:aws:iam::123456789012:role/AppRole",
+  ]
+
+  kms_key_owners = [
+    "arn:aws:iam::123456789012:root",
+  ]
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+<Note>
+If `kms_key_administrators` is empty, the module uses the current caller identity as the key administrator to ensure at least one administrator always has access.
+</Note>
+
+---
+
+## Key Deletion Window and Aliases
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  create_kms_key = true
+
+  # Days to wait before permanent deletion after destroy (7–30; default 30)
+  kms_key_deletion_window_in_days = 14
+
+  # Aliases for the key (must be static strings, not computed values)
+  kms_key_aliases = ["eks/my-cluster"]
+
+  kms_key_description = "KMS key for my-cluster EKS secrets encryption"
+}
+```
+
+---
+
+## CloudWatch Log Group Encryption
+
+EKS control plane logs are written to a CloudWatch Log Group. Encrypt that log group with a separate KMS key using `cloudwatch_log_group_kms_key_id`.
+
+<Warning>
+The KMS key used for CloudWatch Logs must have an appropriate key policy granting the CloudWatch Logs service (`logs.<region>.amazonaws.com`) the `kms:Encrypt*`, `kms:Decrypt*`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, and `kms:Describe*` permissions. Without this, log delivery will fail.
+</Warning>
+
+```hcl
+resource "aws_kms_key" "cloudwatch" {
+  description             = "KMS key for EKS CloudWatch log group"
+  deletion_window_in_days = 14
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::123456789012:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow CloudWatch Logs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.us-east-1.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  # Separate key for control plane logs
+  cloudwatch_log_group_kms_key_id = aws_kms_key.cloudwatch.arn
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+---
+
+## Full Variable Reference
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `create_kms_key` | `bool` | `true` | Create a KMS key for cluster encryption |
+| `encryption_config` | `object` | `{}` | Encryption config; set `provider_key_arn` to BYO key |
+| `attach_encryption_policy` | `bool` | `true` | Attach IAM policy to cluster role to use the KMS key |
+| `enable_kms_key_rotation` | `bool` | `true` | Enable automatic KMS key rotation |
+| `kms_key_rotation_period_in_days` | `number` | `365` | Rotation period in days (90–2560) |
+| `kms_key_deletion_window_in_days` | `number` | `30` | Deletion window in days (7–30) |
+| `kms_key_administrators` | `list(string)` | `[]` | IAM ARNs for key administrators |
+| `kms_key_users` | `list(string)` | `[]` | IAM ARNs for key users |
+| `kms_key_service_users` | `list(string)` | `[]` | IAM ARNs for key service users |
+| `kms_key_owners` | `list(string)` | `[]` | IAM ARNs for full key permissions (`kms:*`) |
+| `kms_key_aliases` | `list(string)` | `[]` | Aliases to create for the key |
+| `kms_key_description` | `string` | `null` | Description of the key |
+| `kms_key_enable_default_policy` | `bool` | `true` | Enable the default KMS key policy |
+| `cloudwatch_log_group_kms_key_id` | `string` | `null` | KMS key ARN for encrypting the CloudWatch log group |

@@ -1,0 +1,215 @@
+---
+title: Fargate Profile
+description: Sub-module that creates an EKS Fargate Profile along with its IAM execution role, enabling pods to run on AWS Fargate (serverless). Can be used standalone or called by the root module via the fargate_profiles variable.
+---
+
+
+The `fargate-profile` sub-module creates an `aws_eks_fargate_profile` resource plus the pod execution IAM role that Fargate requires. Selectors determine which pods EKS schedules on Fargate based on namespace and optional label matching.
+
+<Note>
+  Fargate profiles do not use EC2 instances. Every pod matched by a selector runs in its own isolated compute environment managed by AWS. There is no launch template, Auto Scaling Group, or node IAM role.
+</Note>
+
+## Usage
+
+<Tabs>
+  <Tab title="Via root module (recommended)">
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+  vpc_id             = module.vpc.vpc_id
+  subnet_ids         = module.vpc.private_subnets
+
+  fargate_profiles = {
+    # Run all pods in kube-system on Fargate
+    kube-system = {
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
+
+    # Run pods with a specific label on Fargate
+    app = {
+      selectors = [
+        {
+          namespace = "default"
+          labels = {
+            run-on = "fargate"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Standalone">
+
+```hcl
+module "fargate_profile" {
+  source = "terraform-aws-modules/eks/aws//modules/fargate-profile"
+
+  name         = "separate-fargate-profile"
+  cluster_name = "my-cluster"
+
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  selectors = [
+    { namespace = "kube-system" }
+  ]
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Multiple namespaces">
+
+```hcl
+module "fargate_profile" {
+  source = "terraform-aws-modules/eks/aws//modules/fargate-profile"
+
+  name         = "multi-namespace"
+  cluster_name = module.eks.cluster_name
+
+  subnet_ids = module.vpc.private_subnets
+
+  selectors = [
+    { namespace = "kube-system" },
+    { namespace = "monitoring" },
+    {
+      namespace = "apps"
+      labels = {
+        workload-type = "fargate"
+      }
+    },
+  ]
+
+  tags = {
+    Environment = "prod"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+## Key inputs
+
+### Profile configuration
+
+<ParamField path="name" type="string" required>
+  Name of the EKS Fargate Profile.
+</ParamField>
+
+<ParamField path="cluster_name" type="string" required>
+  Name of the EKS cluster to attach the profile to.
+</ParamField>
+
+<ParamField path="subnet_ids" type="list(string)" required>
+  Private subnet IDs for the Fargate profile. Fargate requires **private** subnets — pods must be able to reach the internet via NAT if outbound access is needed.
+</ParamField>
+
+<ParamField path="selectors" type="list(object({namespace, labels}))">
+  One or more selectors that define which pods run on Fargate. Each selector requires a `namespace` and optionally a map of `labels` for further filtering. A pod must match **all** labels in a selector to be scheduled on Fargate.
+
+  ```hcl
+  selectors = [
+    {
+      namespace = "production"
+      labels = {
+        app  = "my-app"
+        tier = "backend"
+      }
+    }
+  ]
+  ```
+</ParamField>
+
+<ParamField path="timeouts" type="object({create, delete})">
+  Terraform operation timeouts for profile creation and deletion.
+</ParamField>
+
+### IAM role
+
+<ParamField path="create_iam_role" type="bool" default="true">
+  Create a new pod execution IAM role. Set to `false` and provide `iam_role_arn` to use an existing role.
+</ParamField>
+
+<ParamField path="iam_role_arn" type="string">
+  ARN of an existing Fargate pod execution IAM role. Required when `create_iam_role = false`.
+</ParamField>
+
+<ParamField path="iam_role_name" type="string" default="">
+  Name (or prefix) for the created IAM role.
+</ParamField>
+
+<ParamField path="iam_role_attach_cni_policy" type="bool" default="true">
+  Attach `AmazonEKS_CNI_Policy` (IPv4) or `AmazonEKS_CNI_IPv6_Policy` (IPv6) to the pod execution role. Only disable if CNI permissions are granted by another method.
+</ParamField>
+
+<ParamField path="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional managed policies to attach to the pod execution role.
+</ParamField>
+
+<ParamField path="iam_role_permissions_boundary" type="string">
+  ARN of a permissions boundary policy to attach to the pod execution IAM role.
+</ParamField>
+
+<ParamField path="cluster_ip_family" type="string" default="ipv4">
+  IP family of the cluster (`ipv4` or `ipv6`). Determines which CNI policy is attached.
+</ParamField>
+
+<ParamField path="tags" type="map(string)" default="{}">
+  Tags applied to all resources created by this module.
+</ParamField>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `fargate_profile_arn` | ARN of the EKS Fargate Profile |
+| `fargate_profile_id` | Cluster name and Fargate profile name joined by `:` |
+| `fargate_profile_status` | Current status of the Fargate Profile |
+| `fargate_profile_pod_execution_role_arn` | ARN of the pod execution IAM role — same as `iam_role_arn` |
+| `iam_role_arn` | ARN of the pod execution IAM role |
+| `iam_role_name` | Name of the pod execution IAM role |
+| `iam_role_unique_id` | Stable unique ID of the IAM role |
+
+## Resources created
+
+- `aws_eks_fargate_profile.this` — the EKS Fargate Profile
+- `aws_iam_role.this` — pod execution IAM role (Fargate service trust policy)
+- `aws_iam_role_policy.this` — optional inline policy for custom permissions
+- `aws_iam_role_policy_attachment.this` — standard Fargate pod execution policies
+- `aws_iam_role_policy_attachment.additional` — any additional policies
+
+## Selector matching rules
+
+<Accordion title="How EKS evaluates selectors">
+
+When a pod is scheduled, EKS checks it against all Fargate profiles associated with the cluster:
+
+- A pod is eligible for a profile if it matches **at least one** selector in the profile.
+- A pod matches a selector when its namespace equals the selector's `namespace` **and** its labels contain **all** key-value pairs in the selector's `labels` map.
+- If a pod matches multiple profiles, EKS selects one non-deterministically.
+- If no profile matches, the pod is scheduled on an EC2 node group (or remains pending if no node group exists).
+
+</Accordion>
+
+<Warning>
+  Fargate profiles only support **private subnets**. Placing `subnet_ids` that include public subnets will result in profile creation failure or pods that cannot communicate with the EKS control plane.
+</Warning>
+
+<Tip>
+  To run CoreDNS on Fargate, create a selector for the `kube-system` namespace and add the annotation `eks.amazonaws.com/compute-type: fargate` to the CoreDNS deployment, or use the `coredns` EKS addon with `configuration_values = jsonencode({ computeType = "Fargate" })`.
+</Tip>

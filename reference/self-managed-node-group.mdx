@@ -1,0 +1,577 @@
+---
+title: Self-Managed Node Group
+description: Input variables and outputs for the self-managed-node-group sub-module.
+---
+
+The `self-managed-node-group` sub-module manages EC2 Auto Scaling Groups for use as EKS worker nodes. It is invoked for each entry in the `self_managed_node_groups` map on the root module.
+
+## Inputs
+
+### General
+
+<ParamField name="create" type="bool" default="true">
+  Determines whether to create self managed node group or not.
+</ParamField>
+
+<ParamField name="tags" type="map(string)" default="{}">
+  A map of tags to add to all resources.
+</ParamField>
+
+<ParamField name="region" type="string" default="null">
+  Region where the resource(s) will be managed. Defaults to the Region set in the provider configuration.
+</ParamField>
+
+### Autoscaling Group
+
+<ParamField name="name" type="string" default="">
+  Name of the Self managed Node Group.
+</ParamField>
+
+<ParamField name="use_name_prefix" type="bool" default="true">
+  Determines whether to use `name` as is or create a unique name beginning with the `name` as the prefix.
+</ParamField>
+
+<ParamField name="create_autoscaling_group" type="bool" default="true">
+  Determines whether to create autoscaling group or not.
+</ParamField>
+
+<ParamField name="availability_zones" type="list(string)" default="null">
+  A list of one or more availability zones for the group. Used for EC2-Classic and default subnets when not specified with `subnet_ids` argument. Conflicts with `subnet_ids`.
+</ParamField>
+
+<ParamField name="subnet_ids" type="list(string)" default="null">
+  A list of subnet IDs to launch resources in. Subnets automatically determine which availability zones the group will reside. Conflicts with `availability_zones`.
+</ParamField>
+
+<ParamField name="min_size" type="number" default="1">
+  The minimum size of the autoscaling group.
+</ParamField>
+
+<ParamField name="max_size" type="number" default="3">
+  The maximum size of the autoscaling group.
+</ParamField>
+
+<ParamField name="desired_size" type="number" default="1">
+  The number of Amazon EC2 instances that should be running in the autoscaling group.
+</ParamField>
+
+<ParamField name="desired_size_type" type="string" default="null">
+  The unit of measurement for the value specified for `desired_size`. Supported for attribute-based instance type selection only. Valid values: `units`, `vcpu`, `memory-mib`.
+</ParamField>
+
+<ParamField name="capacity_rebalance" type="bool" default="null">
+  Indicates whether capacity rebalance is enabled.
+</ParamField>
+
+<ParamField name="default_instance_warmup" type="number" default="null">
+  Amount of time, in seconds, until a newly launched instance can contribute to the Amazon CloudWatch metrics.
+</ParamField>
+
+<ParamField name="protect_from_scale_in" type="bool" default="false">
+  Allows setting instance protection. The autoscaling group will not select instances with this setting for termination during scale in events.
+</ParamField>
+
+<ParamField name="placement_group" type="string" default="null">
+  The name of the placement group into which you'll launch your instances.
+</ParamField>
+
+<ParamField name="health_check_type" type="string" default="null">
+  `EC2` or `ELB`. Controls how health checking is done.
+</ParamField>
+
+<ParamField name="health_check_grace_period" type="number" default="null">
+  Time (in seconds) after instance comes into service before checking health.
+</ParamField>
+
+<ParamField name="ignore_failed_scaling_activities" type="bool" default="null">
+  Whether to ignore failed Auto Scaling scaling activities while waiting for capacity.
+</ParamField>
+
+<ParamField name="force_delete" type="bool" default="null">
+  Allows deleting the Auto Scaling Group without waiting for all instances in the pool to terminate.
+</ParamField>
+
+<ParamField name="termination_policies" type="list(string)" default="[]">
+  A list of policies to decide how the instances in the Auto Scaling Group should be terminated. The allowed values are `OldestInstance`, `NewestInstance`, `OldestLaunchConfiguration`, `ClosestToNextInstanceHour`, `OldestLaunchTemplate`, `AllocationStrategy`, `Default`.
+</ParamField>
+
+<ParamField name="suspended_processes" type="list(string)" default="[]">
+  A list of processes to suspend for the Auto Scaling Group.
+</ParamField>
+
+<ParamField name="max_instance_lifetime" type="number" default="null">
+  The maximum amount of time, in seconds, that an instance can be in service, values must be either equal to 0 or between 604800 and 31536000 seconds.
+</ParamField>
+
+<ParamField name="enabled_metrics" type="list(string)" default="[]">
+  A list of metrics to collect.
+</ParamField>
+
+<ParamField name="metrics_granularity" type="string" default="null">
+  The granularity to associate with the metrics to collect. The only valid value is `1Minute`.
+</ParamField>
+
+<ParamField name="initial_lifecycle_hooks" type="list(object)" default="null">
+  One or more Lifecycle Hooks to attach to the Auto Scaling Group before instances are launched.
+</ParamField>
+
+<ParamField name="instance_maintenance_policy" type="object" default="null">
+  If this block is configured, add a instance maintenance policy to the specified Auto Scaling group. Contains `max_healthy_percentage` and `min_healthy_percentage`.
+</ParamField>
+
+<ParamField name="instance_refresh" type="object" default="{ strategy = 'Rolling', preferences = { min_healthy_percentage = 66 } }">
+  If this block is configured, start an Instance Refresh when this Auto Scaling Group is updated.
+
+  <Expandable title="instance_refresh fields">
+    <ParamField name="strategy" type="string" default="null">The strategy to use for instance refresh. Only `Rolling` is supported.</ParamField>
+    <ParamField name="triggers" type="list(string)" default="null">Set of additional property names that will trigger an Instance Refresh.</ParamField>
+    <ParamField name="preferences" type="object" default="null">Override default parameters for Instance Refresh. Contains `min_healthy_percentage`, `max_healthy_percentage`, `instance_warmup`, `checkpoint_delay`, `checkpoint_percentages`, `skip_matching`, `auto_rollback`, `scale_in_protected_instances`, `standby_instances`, and `alarm_specification`.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="use_mixed_instances_policy" type="bool" default="false">
+  Determines whether to use a mixed instances policy in the autoscaling group or not.
+</ParamField>
+
+<ParamField name="mixed_instances_policy" type="object" default="null">
+  Configuration block containing settings to define launch targets for Auto Scaling groups.
+
+  <Expandable title="mixed_instances_policy fields">
+    <ParamField name="instances_distribution" type="object" default="null">Distribution of on-demand and spot instances. Contains `on_demand_allocation_strategy`, `on_demand_base_capacity`, `on_demand_percentage_above_base_capacity`, `spot_allocation_strategy`, `spot_instance_pools`, and `spot_max_price`.</ParamField>
+    <ParamField name="launch_template" type="object">Launch template configuration with `override` list for multiple instance types or requirements.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField name="timeouts" type="object" default="null">
+  Timeout configurations for the autoscaling group. Contains `delete`.
+</ParamField>
+
+<ParamField name="autoscaling_group_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the autoscaling group created. Tags are applied to the autoscaling group only and are NOT propagated to instances.
+</ParamField>
+
+### AMI and Instance
+
+<ParamField name="ami_id" type="string" default="">
+  The AMI from which to launch the instance.
+</ParamField>
+
+<ParamField name="ami_type" type="string" default="AL2023_x86_64_STANDARD">
+  Type of Amazon Machine Image (AMI) associated with the node group.
+</ParamField>
+
+<ParamField name="kubernetes_version" type="string" default="null">
+  Kubernetes cluster version - used to lookup default AMI ID if one is not provided.
+</ParamField>
+
+<ParamField name="instance_type" type="string" default="m6i.large">
+  The type of the instance to launch.
+</ParamField>
+
+<ParamField name="instance_requirements" type="object" default="null">
+  The attribute requirements for the type of instance. If present then `instance_type` cannot be present.
+</ParamField>
+
+<ParamField name="key_name" type="string" default="null">
+  The key name that should be used for the instance.
+</ParamField>
+
+<ParamField name="ebs_optimized" type="bool" default="null">
+  If true, the launched EC2 instance will be EBS-optimized.
+</ParamField>
+
+<ParamField name="vpc_security_group_ids" type="list(string)" default="[]">
+  A list of security group IDs to associate.
+</ParamField>
+
+<ParamField name="cluster_primary_security_group_id" type="string" default="null">
+  The ID of the EKS cluster primary security group to associate with the instance(s).
+</ParamField>
+
+<ParamField name="enable_monitoring" type="bool" default="false">
+  Enables/disables detailed monitoring.
+</ParamField>
+
+<ParamField name="enable_efa_support" type="bool" default="false">
+  Determines whether to enable Elastic Fabric Adapter (EFA) support.
+</ParamField>
+
+<ParamField name="enable_efa_only" type="bool" default="true">
+  Determines whether to enable EFA (`false`, default) or EFA and EFA-only (`true`) network interfaces. Note: requires vpc-cni version `v1.18.4` or later.
+</ParamField>
+
+<ParamField name="efa_indices" type="list(number)" default="[0]">
+  The indices of the network interfaces that should be EFA-enabled. Only valid when `enable_efa_support` = `true`.
+</ParamField>
+
+### Launch Template
+
+<ParamField name="create_launch_template" type="bool" default="true">
+  Determines whether to create launch template or not.
+</ParamField>
+
+<ParamField name="launch_template_id" type="string" default="">
+  The ID of an existing launch template to use. Required when `create_launch_template` = `false`.
+</ParamField>
+
+<ParamField name="launch_template_name" type="string" default="null">
+  Name of launch template to be created.
+</ParamField>
+
+<ParamField name="launch_template_use_name_prefix" type="bool" default="true">
+  Determines whether to use `launch_template_name` as is or create a unique name beginning with the `launch_template_name` as the prefix.
+</ParamField>
+
+<ParamField name="launch_template_description" type="string" default="null">
+  Description of the launch template.
+</ParamField>
+
+<ParamField name="launch_template_version" type="string" default="null">
+  Launch template version. Can be version number, `$Latest`, or `$Default`.
+</ParamField>
+
+<ParamField name="launch_template_default_version" type="string" default="null">
+  Default Version of the launch template.
+</ParamField>
+
+<ParamField name="update_launch_template_default_version" type="bool" default="true">
+  Whether to update Default Version each update. Conflicts with `launch_template_default_version`.
+</ParamField>
+
+<ParamField name="launch_template_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the tag_specifications of launch template created.
+</ParamField>
+
+<ParamField name="tag_specifications" type="list(string)" default="['instance', 'volume', 'network-interface']">
+  The tags to apply to the resources during launch.
+</ParamField>
+
+<ParamField name="disable_api_termination" type="bool" default="null">
+  If true, enables EC2 instance termination protection.
+</ParamField>
+
+<ParamField name="instance_initiated_shutdown_behavior" type="string" default="null">
+  Shutdown behavior for the instance. Can be `stop` or `terminate`. (Default: `stop`).
+</ParamField>
+
+<ParamField name="kernel_id" type="string" default="null">
+  The kernel ID.
+</ParamField>
+
+<ParamField name="ram_disk_id" type="string" default="null">
+  The ID of the ram disk.
+</ParamField>
+
+<ParamField name="block_device_mappings" type="map(object)" default="null">
+  Specify volumes to attach to the instance besides the volumes specified by the AMI.
+</ParamField>
+
+<ParamField name="capacity_reservation_specification" type="object" default="null">
+  Targeting for EC2 capacity reservations.
+</ParamField>
+
+<ParamField name="cpu_options" type="object" default="null">
+  The CPU options for the instance.
+</ParamField>
+
+<ParamField name="credit_specification" type="object" default="null">
+  Customize the credit specification of the instance.
+</ParamField>
+
+<ParamField name="enclave_options" type="object" default="null">
+  Enable Nitro Enclaves on launched instances.
+</ParamField>
+
+<ParamField name="instance_market_options" type="object" default="null">
+  The market (purchasing) option for the instance.
+</ParamField>
+
+<ParamField name="maintenance_options" type="object" default="null">
+  The maintenance options for the instance.
+</ParamField>
+
+<ParamField name="license_specifications" type="list(object)" default="null">
+  A list of license specifications to associate with.
+</ParamField>
+
+<ParamField name="metadata_options" type="object" default="{ http_endpoint = 'enabled', http_put_response_hop_limit = 1, http_tokens = 'required' }">
+  Customize the metadata options for the instance.
+</ParamField>
+
+<ParamField name="network_interfaces" type="list(object)" default="[]">
+  Customize network interfaces to be attached at instance boot time.
+</ParamField>
+
+<ParamField name="placement" type="object" default="null">
+  The placement of the instance.
+</ParamField>
+
+<ParamField name="create_placement_group" type="bool" default="false">
+  Determines whether a placement group is created and used by the node group.
+</ParamField>
+
+<ParamField name="private_dns_name_options" type="object" default="null">
+  The options for the instance hostname. The default values are inherited from the subnet.
+</ParamField>
+
+### User Data
+
+<ParamField name="cluster_name" type="string" default="">
+  Name of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_endpoint" type="string" default="null">
+  Endpoint of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_auth_base64" type="string" default="null">
+  Base64 encoded CA of associated EKS cluster.
+</ParamField>
+
+<ParamField name="cluster_service_cidr" type="string" default="null">
+  The CIDR block (IPv4 or IPv6) used by the cluster to assign Kubernetes service IP addresses.
+</ParamField>
+
+<ParamField name="cluster_ip_family" type="string" default="null">
+  The IP family used to assign Kubernetes pod and service addresses. Valid values are `ipv4` (default) and `ipv6`.
+</ParamField>
+
+<ParamField name="additional_cluster_dns_ips" type="list(string)" default="null">
+  Additional DNS IP addresses to use for the cluster. Only used when `ami_type` = `BOTTLEROCKET_*`.
+</ParamField>
+
+<ParamField name="pre_bootstrap_user_data" type="string" default="null">
+  User data that is injected into the user data script ahead of the EKS bootstrap script. Not used when `ami_type` = `BOTTLEROCKET_*`.
+</ParamField>
+
+<ParamField name="post_bootstrap_user_data" type="string" default="null">
+  User data that is appended to the user data script after of the EKS bootstrap script. Not used when `ami_type` = `BOTTLEROCKET_*`.
+</ParamField>
+
+<ParamField name="bootstrap_extra_args" type="string" default="null">
+  Additional arguments passed to the bootstrap script.
+</ParamField>
+
+<ParamField name="user_data_template_path" type="string" default="null">
+  Path to a local, custom user data template file to use when rendering user data.
+</ParamField>
+
+<ParamField name="cloudinit_pre_nodeadm" type="list(object)" default="null">
+  Array of cloud-init document parts that are created before the nodeadm document part.
+</ParamField>
+
+<ParamField name="cloudinit_post_nodeadm" type="list(object)" default="null">
+  Array of cloud-init document parts that are created after the nodeadm document part.
+</ParamField>
+
+### IAM Role
+
+<ParamField name="create_iam_instance_profile" type="bool" default="true">
+  Determines whether an IAM instance profile is created or to use an existing IAM instance profile.
+</ParamField>
+
+<ParamField name="iam_instance_profile_arn" type="string" default="null">
+  Amazon Resource Name (ARN) of an existing IAM instance profile that provides permissions for the node group. Required if `create_iam_instance_profile` = `false`.
+</ParamField>
+
+<ParamField name="iam_role_arn" type="string" default="null">
+  ARN of the IAM role used by the instance profile. Required when `create_access_entry = true` and `create_iam_instance_profile = false`.
+</ParamField>
+
+<ParamField name="iam_role_name" type="string" default="null">
+  Name to use on IAM role created.
+</ParamField>
+
+<ParamField name="iam_role_use_name_prefix" type="bool" default="true">
+  Determines whether cluster IAM role name is used as a prefix.
+</ParamField>
+
+<ParamField name="iam_role_path" type="string" default="null">
+  IAM role path.
+</ParamField>
+
+<ParamField name="iam_role_description" type="string" default="Self managed node group IAM role">
+  Description of the role.
+</ParamField>
+
+<ParamField name="iam_role_permissions_boundary" type="string" default="null">
+  ARN of the policy that is used to set the permissions boundary for the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_attach_cni_policy" type="bool" default="true">
+  Whether to attach the `AmazonEKS_CNI_Policy`/`AmazonEKS_CNI_IPv6_Policy` IAM policy to the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional policies to be added to the IAM role.
+</ParamField>
+
+<ParamField name="iam_role_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the IAM role created.
+</ParamField>
+
+<ParamField name="create_iam_role_policy" type="bool" default="true">
+  Determines whether an IAM role policy is created or not.
+</ParamField>
+
+<ParamField name="iam_role_policy_statements" type="list(object)" default="null">
+  A list of IAM policy statements - used for adding specific IAM permissions as needed.
+</ParamField>
+
+### Access Entry
+
+<ParamField name="create_access_entry" type="bool" default="true">
+  Determines whether an access entry is created for the IAM role used by the node group.
+</ParamField>
+
+### Security Group
+
+<ParamField name="create_security_group" type="bool" default="true">
+  Determines if a security group is created.
+</ParamField>
+
+<ParamField name="security_group_name" type="string" default="null">
+  Name to use on security group created.
+</ParamField>
+
+<ParamField name="security_group_use_name_prefix" type="bool" default="true">
+  Determines whether the security group name is used as a prefix.
+</ParamField>
+
+<ParamField name="security_group_description" type="string" default="null">
+  Description of the security group created.
+</ParamField>
+
+<ParamField name="security_group_ingress_rules" type="map(object)" default="{}">
+  Security group ingress rules to add to the security group created.
+</ParamField>
+
+<ParamField name="security_group_egress_rules" type="map(object)" default="{}">
+  Security group egress rules to add to the security group created.
+</ParamField>
+
+<ParamField name="security_group_tags" type="map(string)" default="{}">
+  A map of additional tags to add to the security group created.
+</ParamField>
+
+---
+
+## Outputs
+
+### Launch Template
+
+<ResponseField name="launch_template_id" type="string">
+  The ID of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_arn" type="string">
+  The ARN of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_latest_version" type="number">
+  The latest version of the launch template.
+</ResponseField>
+
+<ResponseField name="launch_template_name" type="string">
+  The name of the launch template.
+</ResponseField>
+
+### Autoscaling Group
+
+<ResponseField name="autoscaling_group_arn" type="string">
+  The ARN for this autoscaling group.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_id" type="string">
+  The autoscaling group id.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_name" type="string">
+  The autoscaling group name.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_min_size" type="number">
+  The minimum size of the autoscaling group.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_max_size" type="number">
+  The maximum size of the autoscaling group.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_desired_capacity" type="number">
+  The number of Amazon EC2 instances that should be running in the group.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_default_cooldown" type="number">
+  Time between a scaling activity and the succeeding scaling activity.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_health_check_grace_period" type="number">
+  Time after instance comes into service before checking health.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_health_check_type" type="string">
+  EC2 or ELB. Controls how health checking is done.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_availability_zones" type="list(string)">
+  The availability zones of the autoscaling group.
+</ResponseField>
+
+<ResponseField name="autoscaling_group_vpc_zone_identifier" type="set(string)">
+  The VPC zone identifier.
+</ResponseField>
+
+### IAM Role
+
+<ResponseField name="iam_role_name" type="string">
+  The name of the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_arn" type="string">
+  The Amazon Resource Name (ARN) specifying the IAM role.
+</ResponseField>
+
+<ResponseField name="iam_role_unique_id" type="string">
+  Stable and unique string identifying the IAM role.
+</ResponseField>
+
+### IAM Instance Profile
+
+<ResponseField name="iam_instance_profile_arn" type="string">
+  ARN assigned by AWS to the instance profile.
+</ResponseField>
+
+<ResponseField name="iam_instance_profile_id" type="string">
+  Instance profile's ID.
+</ResponseField>
+
+<ResponseField name="iam_instance_profile_unique" type="string">
+  Stable and unique string identifying the IAM instance profile.
+</ResponseField>
+
+### Access Entry
+
+<ResponseField name="access_entry_arn" type="string">
+  Amazon Resource Name (ARN) of the Access Entry.
+</ResponseField>
+
+### Security Group
+
+<ResponseField name="security_group_arn" type="string">
+  Amazon Resource Name (ARN) of the security group.
+</ResponseField>
+
+<ResponseField name="security_group_id" type="string">
+  ID of the security group.
+</ResponseField>
+
+### Additional
+
+<ResponseField name="image_id" type="string">
+  ID of the image.
+</ResponseField>
+
+<ResponseField name="user_data" type="string">
+  Base64 encoded user data.
+</ResponseField>

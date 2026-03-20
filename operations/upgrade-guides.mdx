@@ -1,0 +1,584 @@
+---
+title: Upgrade Guides
+description: Step-by-step instructions for upgrading the terraform-aws-eks module across major versions, including breaking changes and migration steps.
+---
+
+## Upgrading the Kubernetes Version
+
+To upgrade the Kubernetes version of your EKS cluster, update the `kubernetes_version` variable in your module definition (renamed from `cluster_version` in v21.x):
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.32" # bump this value
+
+  # ...
+}
+```
+
+Then run:
+
+```bash
+terraform plan   # review the proposed changes
+terraform apply  # apply the version upgrade
+```
+
+<Note>
+  EKS upgrades are performed one minor version at a time. Attempting to skip a minor version will result in an API error. For example, to go from 1.29 to 1.31, you must first upgrade to 1.30.
+</Note>
+
+## Upgrading the Module Version
+
+<Steps>
+  <Step title="Review the upgrade guide">
+    Read the breaking changes section below for the target major version before making any changes.
+  </Step>
+  <Step title="Update the version constraint">
+    Change the `version` argument in your module source block to the new target.
+  </Step>
+  <Step title="Reinitialise Terraform">
+    ```bash
+    terraform init -upgrade
+    ```
+  </Step>
+  <Step title="Apply incremental state moves (if required)">
+    Some major versions require Terraform state moves before applying. These are documented in the per-version sections below.
+  </Step>
+  <Step title="Plan and apply">
+    ```bash
+    terraform plan
+    terraform apply
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Breaking Changes by Major Version
+
+<Tabs>
+  <Tab title="v17.x">
+    ### Upgrade from v16.x to v17.x
+
+    This release removes the use of `random_pet` resources in Managed Node Groups (MNG). Those resources were used to force MNG re-creation on changes but caused many issues. Without intervention, upgrading will cause your MNGs to be **replaced**.
+
+    #### Migration Steps
+
+    <Steps>
+      <Step title="Apply v16.2.0 first">
+        Before upgrading, ensure your configuration is fully applied at `v16.2.0`.
+      </Step>
+      <Step title="Retrieve existing node group names">
+        ```bash
+        terraform state show 'module.eks.module.node_groups.aws_eks_node_group.workers["example"]' | grep node_group_name
+        # node_group_name = "test-eks-mwIwsvui-example-sincere-squid"
+        ```
+      </Step>
+      <Step title="Pin existing names in your configuration">
+        Set the current node group name explicitly to prevent re-creation:
+
+        ```hcl
+        module "eks" {
+          source  = "terraform-aws-modules/eks/aws"
+          version = "17.0.0"
+
+          cluster_name    = "test-eks-mwIwsvui"
+          cluster_version = "1.20"
+
+          node_groups = {
+            example = {
+              name = "test-eks-mwIwsvui-example-sincere-squid"
+              # ...
+            }
+          }
+        }
+        ```
+      </Step>
+      <Step title="Plan and verify">
+        Run `terraform plan`. You should see only the `random_pet` resource scheduled for destruction — no node group replacements:
+
+        ```bash
+        # Plan: 0 to add, 0 to change, 1 to destroy.
+        # Only: module.eks.module.node_groups.random_pet.node_groups["example"] will be destroyed
+        ```
+      </Step>
+      <Step title="Apply">
+        ```bash
+        terraform apply
+        ```
+      </Step>
+    </Steps>
+
+    <Tip>
+      After the first apply, remove the hardcoded `name` argument and let the module use `node_group_name_prefix` to generate names automatically. This avoids collisions during node group re-creation since `lifecycle { create_before_destroy = true }` is set.
+    </Tip>
+  </Tab>
+
+  <Tab title="v18.x">
+    ### Upgrade from v17.x to v18.x
+
+    This is a large, ground-up rewrite of the module. Review all changes carefully before upgrading.
+
+    #### Key Breaking Changes
+
+    - **Launch configuration support removed** — only launch templates are supported going forward.
+    - **`aws-auth` ConfigMap management removed** — the Kubernetes provider dependency has been removed. An output `aws_auth_configmap_yaml` is provided to help you manage the ConfigMap externally.
+    - **kubeconfig management removed** — use `aws eks update-kubeconfig --name <cluster_name>` instead.
+    - **Terminology updated** to match AWS documentation:
+      - `node_groups` → `eks_managed_node_groups`
+      - `worker_groups` → `self_managed_node_groups`
+      - `fargate_profiles` — unchanged
+    - **Sub-modules refactored** — each node group type is now a standalone sub-module (`eks-managed-node-group`, `self-managed-node-group`, `fargate-profile`).
+    - **Security group overhaul** — rules have been reduced to the bare minimum for a bare-bones cluster. Review your existing rules against the new module defaults.
+    - **Resource names may change** — security groups and IAM roles cannot be renamed in-place; they must be recreated. To preserve legacy naming (pre-18.x), set `prefix_separator = ""`.
+
+    #### Preserving the Cluster Control Plane State
+
+    For most users, add the following to your v17.x configuration **before** bumping the module version to preserve the cluster control plane state:
+
+    ```hcl
+    prefix_separator                   = ""
+    iam_role_name                      = "<CLUSTER_NAME>"
+    cluster_security_group_name        = "<CLUSTER_NAME>"
+    cluster_security_group_description = "EKS cluster security group."
+    ```
+
+    Then move the IAM role state:
+
+    ```bash
+    terraform state mv \
+      'module.eks.aws_iam_role.cluster[0]' \
+      'module.eks.aws_iam_role.this[0]'
+    ```
+
+    #### Key Variable Renames
+
+    | v17.x Variable | v18.x Variable |
+    |---|---|
+    | `create_eks` | `create` |
+    | `subnets` | `subnet_ids` |
+    | `node_groups` | `eks_managed_node_groups` |
+    | `node_groups_defaults` | `eks_managed_node_group_defaults` |
+    | `worker_groups` | `self_managed_node_groups` |
+    | `workers_group_defaults` | `self_managed_node_group_defaults` |
+    | `min_capacity` | `min_size` |
+    | `max_capacity` | `max_size` |
+    | `desired_capacity` | `desired_size` |
+    | `k8s_labels` | `labels` |
+    | `additional_tags` | `tags` |
+    | `pre_userdata` | `pre_bootstrap_user_data` |
+    | `additional_userdata` | `post_bootstrap_user_data` |
+    | `manage_cluster_iam_resources` | `create_iam_role` |
+    | `cluster_iam_role_name` | `iam_role_name` |
+    | `permissions_boundary` | `iam_role_permissions_boundary` |
+    | `cluster_log_retention_in_days` | `cloudwatch_log_group_retention_in_days` |
+
+    #### Before / After Example
+
+    ```diff
+     module "eks" {
+       source  = "terraform-aws-modules/eks/aws"
+    -  version = "~> 17.0"
+    +  version = "~> 18.0"
+
+       cluster_name    = local.name
+       cluster_version = local.cluster_version
+
+    -  subnets = module.vpc.private_subnets
+    +  subnet_ids = module.vpc.private_subnets
+
+    -  node_groups_defaults = {
+    +  eks_managed_node_group_defaults = {
+         ami_type  = "AL2_x86_64"
+         disk_size = 50
+       }
+
+    -  node_groups = {
+    +  eks_managed_node_groups = {
+         node_group = {
+    -      min_capacity     = 1
+    -      max_capacity     = 10
+    -      desired_capacity = 1
+    +      min_size     = 1
+    +      max_size     = 10
+    +      desired_size = 1
+
+    -      k8s_labels = { Environment = "test" }
+    +      labels     = { Environment = "test" }
+
+    -      additional_tags = { ExtraTag = "example" }
+    +      tags            = { ExtraTag = "example" }
+         }
+       }
+    -
+    -  worker_additional_security_group_ids = [aws_security_group.additional.id]
+    -  worker_groups_launch_template = [{ ... }]
+    +
+    +  self_managed_node_group_defaults = {
+    +    vpc_security_group_ids = [aws_security_group.additional.id]
+    +  }
+    +  self_managed_node_groups = { ... }
+     }
+    ```
+
+    #### Fargate IAM Policy Attachment (Before / After)
+
+    ```diff
+     resource "aws_iam_role_policy_attachment" "default" {
+    -  role       = module.eks.fargate_iam_role_name
+    +  role       = module.eks.fargate_profiles["example"].iam_role_name
+       policy_arn = aws_iam_policy.default.arn
+     }
+    ```
+  </Tab>
+
+  <Tab title="v19.x">
+    ### Upgrade from v18.x to v19.x
+
+    #### Key Breaking Changes
+
+    - **`cluster_id` output behavior changed** — for standard EKS clusters in AWS, `cluster_id` now returns `null`. Replace all references to `cluster_id` with `cluster_name` before upgrading.
+    - **Minimum Terraform version** increased to `v1.0`.
+    - **Minimum AWS provider version** increased to `v4.45`.
+    - **Per-node-group security groups removed** — the individual empty security group previously created per EKS managed or self-managed node group has been removed. Migrate to externally created security groups before upgrading.
+    - **`iam_role_additional_policies` type changed** from `list(string)` to `map(string)` — this is a breaking change requiring both configuration and state changes.
+    - **`create_kms_key` default changed** from `false` to `true` — clusters now default to encrypting secrets with a customer-managed KMS key.
+    - **`cluster_endpoint_public_access` default changed** from `true` to `false` — clusters now default to private-only endpoint access.
+    - **`cluster_endpoint_private_access` default changed** from `false` to `true`.
+    - **`cluster_encryption_config` type changed** from `list(any)` to `any` — remove the outer `[...]` brackets.
+    - **`block_device_mappings` changed** from a map of maps to an array of maps — remove the outer key.
+    - **`node_security_group_enable_recommended_rules`** added, defaults to `true` — remove any duplicate rules from `node_security_group_additional_rules` before upgrading.
+
+    #### Pre-Upgrade: Remove Per-Node-Group Security Groups
+
+    **Self-managed node groups** — while still on v18.x, set:
+
+    ```hcl
+    self_managed_node_group_defaults = {
+      create_security_group = false
+      instance_refresh = {
+        strategy = "Rolling"
+        preferences = {
+          min_healthy_percentage = 66
+        }
+      }
+    }
+    ```
+
+    **EKS managed node groups** — while still on v18.x, set:
+
+    ```hcl
+    eks_managed_node_group_defaults = {
+      create_security_group = false
+    }
+    ```
+
+    Apply these changes first to cycle nodes and remove the security groups before bumping the module version.
+
+    #### `iam_role_additional_policies` Migration
+
+    Change from a list to a map:
+
+    ```diff
+    -iam_role_additional_policies = [aws_iam_policy.additional.arn]
+    +iam_role_additional_policies = {
+    +  additional = aws_iam_policy.additional.arn
+    +}
+    ```
+
+    Then perform the corresponding Terraform state move to avoid permission disruptions during apply:
+
+    ```bash
+    # Cluster IAM role
+    terraform state mv \
+      'module.eks.aws_iam_role_policy_attachment.this["arn:aws:iam::111111111111:policy/my-policy"]' \
+      'module.eks.aws_iam_role_policy_attachment.additional["additional"]'
+
+    # EKS managed node group IAM role
+    terraform state mv \
+      'module.eks.module.eks_managed_node_group["<NODE_GROUP_KEY>"].aws_iam_role_policy_attachment.this["<POLICY_ARN>"]' \
+      'module.eks.module.eks_managed_node_group["<NODE_GROUP_KEY>"].aws_iam_role_policy_attachment.additional["<POLICY_MAP_KEY>"]'
+
+    # Self-managed node group IAM role
+    terraform state mv \
+      'module.eks.module.self_managed_node_group["<NODE_GROUP_KEY>"].aws_iam_role_policy_attachment.this["<POLICY_ARN>"]' \
+      'module.eks.module.self_managed_node_group["<NODE_GROUP_KEY>"].aws_iam_role_policy_attachment.additional["<POLICY_MAP_KEY>"]'
+
+    # Fargate profile IAM role
+    terraform state mv \
+      'module.eks.module.fargate_profile["<FARGATE_PROFILE_KEY>"].aws_iam_role_policy_attachment.this["<POLICY_ARN>"]' \
+      'module.eks.module.fargate_profile["<FARGATE_PROFILE_KEY>"].aws_iam_role_policy_attachment.additional["<POLICY_MAP_KEY>"]'
+    ```
+
+    #### Before / After Diff
+
+    ```diff
+     module "eks" {
+       source  = "terraform-aws-modules/eks/aws"
+    -  version = "~> 18.0"
+    +  version = "~> 19.0"
+
+    +  cluster_endpoint_public_access  = true  # was the default in v18
+    -  cluster_endpoint_private_access = true   # now the default in v19
+
+       cluster_addons = {
+    -    resolve_conflicts = "OVERWRITE"         # now the default
+    +    preserve          = true
+    +    most_recent       = true
+         kube-proxy = {}
+         vpc-cni    = {}
+       }
+
+    -  cluster_encryption_config = [{
+    -    resources = ["secrets"]
+    -  }]
+    +  cluster_encryption_config = {
+    +    resources = ["secrets"]
+    +  }
+
+    -  iam_role_additional_policies = [aws_iam_policy.additional.arn]
+    +  iam_role_additional_policies = {
+    +    additional = aws_iam_policy.additional.arn
+    +  }
+     }
+    ```
+  </Tab>
+
+  <Tab title="v20.x">
+    ### Upgrade from v19.x to v20.x
+
+    #### Key Breaking Changes
+
+    - **Minimum AWS provider version** increased to `v5.34`.
+    - **Minimum Terraform version** increased to `v1.3`.
+    - **`resolve_conflicts` in `cluster_addons` deprecated** — replaced with `resolve_conflicts_on_create` and `resolve_conflicts_on_update`.
+    - **`preserve` default for `cluster_addons`** changed to `true`.
+    - **`aws-auth` ConfigMap resources moved** to a standalone `aws-auth` sub-module — the Kubernetes provider dependency has been removed from the main module.
+    - **Cluster access management added** — the default `authentication_mode` is now `API_AND_CONFIG_MAP`. `CONFIG_MAP` is no longer supported; use `API_AND_CONFIG_MAP` at minimum.
+    - **`bootstrap_cluster_creator_admin_permissions`** hardcoded to `false`; use `enable_cluster_creator_admin_permissions` instead.
+    - **`kms_key_enable_default_policy` default** changed from `false` to `true`.
+    - **Karpenter IRSA naming convention removed** — variables prefixed `irsa_` have been renamed (see table below).
+
+    #### `aws-auth` ConfigMap Migration
+
+    Move `aws-auth` management to the standalone sub-module:
+
+    ```diff
+     module "eks" {
+       source  = "terraform-aws-modules/eks/aws"
+    -  version = "~> 19.21"
+    +  version = "~> 20.0"
+
+    +  # Preserve v19.x KMS default if desired
+    +  kms_key_enable_default_policy = false
+
+    -  manage_aws_auth_configmap = true
+    -  aws_auth_roles = [
+    -    {
+    -      rolearn  = "arn:aws:iam::66666666666:role/role1"
+    -      username = "role1"
+    -      groups   = ["custom-role-group"]
+    -    },
+    -  ]
+    -  aws_auth_users = [
+    -    {
+    -      userarn  = "arn:aws:iam::66666666666:user/user1"
+    -      username = "user1"
+    -      groups   = ["custom-users-group"]
+    -    },
+    -  ]
+     }
+
+    +module "eks_aws_auth" {
+    +  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
+    +  version = "~> 20.0"
+
+    +  manage_aws_auth_configmap = true
+
+    +  aws_auth_roles = [
+    +    {
+    +      rolearn  = "arn:aws:iam::66666666666:role/role1"
+    +      username = "role1"
+    +      groups   = ["custom-role-group"]
+    +    },
+    +  ]
+    +  aws_auth_users = [
+    +    {
+    +      userarn  = "arn:aws:iam::66666666666:user/user1"
+    +      username = "user1"
+    +      groups   = ["custom-users-group"]
+    +    },
+    +  ]
+    +}
+    ```
+
+    #### Authentication Mode Changes
+
+    <Warning>
+      Changing `authentication_mode` is a **one-way** operation. You can move from `CONFIG_MAP` → `API_AND_CONFIG_MAP` → `API`, but you cannot revert.
+    </Warning>
+
+    If migrating to cluster access entries and there are entries that must remain in the `aws-auth` ConfigMap, first remove the ConfigMap from Terraform state to avoid disruptions:
+
+    ```bash
+    terraform state rm 'module.eks.kubernetes_config_map_v1_data.aws_auth[0]'
+    terraform state rm 'module.eks.kubernetes_config_map.aws_auth[0]'  # only if Terraform originally created it
+    ```
+
+    #### Karpenter Variable Renames
+
+    | v19.x Variable | v20.x Variable |
+    |---|---|
+    | `create_irsa` | `create_iam_role` |
+    | `irsa_name` | `iam_role_name` |
+    | `irsa_use_name_prefix` | `iam_role_name_prefix` |
+    | `irsa_path` | `iam_role_path` |
+    | `irsa_description` | `iam_role_description` |
+    | `irsa_max_session_duration` | `iam_role_max_session_duration` |
+    | `irsa_permissions_boundary_arn` | `iam_role_permissions_boundary_arn` |
+    | `irsa_tags` | `iam_role_tags` |
+    | `policies` | `iam_role_policies` |
+    | `irsa_policy_name` | `iam_policy_name` |
+    | `irsa_ssm_parameter_arns` | `ami_id_ssm_parameter_arns` |
+
+    #### Karpenter Before / After
+
+    ```diff
+     module "eks_karpenter" {
+       source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+    -  version = "~> 19.21"
+    +  version = "~> 20.0"
+
+    +  # Preserve v19.x defaults if desired
+    +  enable_irsa             = true
+    +  create_instance_profile = true
+
+    +  # Avoid resource re-creation
+    +  iam_role_name          = "KarpenterIRSA-${module.eks.cluster_name}"
+    +  iam_role_description   = "Karpenter IAM role for service account"
+    +  iam_policy_name        = "KarpenterIRSA-${module.eks.cluster_name}"
+    +  iam_policy_description = "Karpenter IAM role for service account"
+     }
+    ```
+  </Tab>
+
+  <Tab title="v21.x">
+    ### Upgrade from v20.x to v21.x
+
+    #### Key Breaking Changes
+
+    - **Minimum Terraform version** increased to `v1.5.7`.
+    - **Minimum AWS provider version** increased to `v6.0.0`.
+    - **Minimum TLS provider version** increased to `v4.0.0`.
+    - **`aws-auth` sub-module removed** — users who need it can pin to `~> 20.0`.
+    - **`bootstrap_self_managed_addons` hardcoded to `false`** — use the EKS addons API instead.
+    - **`cluster_name` renamed to `name`** — and many other `cluster_*` prefixed variables have been renamed (see full list below).
+    - **`cluster_version` renamed to `kubernetes_version`** — update this in both the root module and sub-modules.
+    - **`cluster_addons` renamed to `addons`**.
+    - **`cluster_identity_providers` renamed to `identity_providers`**.
+    - **EFA subnet selection removed** — when using `enable_efa_support` or placement groups, you must now specify the correct `subnet_ids` explicitly.
+    - **EKS managed node group defaults changed:**
+      - `ami_type` now defaults to `AL2023_x86_64_STANDARD` (was `AL2_x86_64`)
+      - IMDS hop limit now defaults to `1` (was `2`)
+      - `enable_monitoring` now defaults to `false`
+      - `use_latest_ami_release_version` now defaults to `true`
+    - **Self-managed node group defaults changed:**
+      - `ami_type` now defaults to `AL2023_x86_64_STANDARD`
+      - IMDS hop limit now defaults to `1`
+      - `enable_monitoring` now defaults to `false`
+    - **Karpenter:**
+      - IRSA support removed; EKS Pod Identity is now the default.
+      - Karpenter `v0.33`-era controller policy removed; `v1` policy used by default.
+      - `create_pod_identity_association` now defaults to `true`.
+    - **`addons.resolve_conflicts_on_create`** now defaults to `"NONE"` (was `"OVERWRITE"`).
+    - **`addons.most_recent`** now defaults to `true` (was `false`).
+    - **`encryption_config` (formerly `cluster_encryption_config`)** — to disable custom KMS encryption, set `encryption_config = null`; setting `encryption_config = {}` no longer achieves this.
+
+    #### `cluster_*` Variable Renames (Root Module)
+
+    | v20.x Variable | v21.x Variable |
+    |---|---|
+    | `cluster_name` | `name` |
+    | `cluster_version` | `kubernetes_version` |
+    | `cluster_enabled_log_types` | `enabled_log_types` |
+    | `cluster_endpoint_private_access` | `endpoint_private_access` |
+    | `cluster_endpoint_public_access` | `endpoint_public_access` |
+    | `cluster_endpoint_public_access_cidrs` | `endpoint_public_access_cidrs` |
+    | `cluster_ip_family` | `ip_family` |
+    | `cluster_service_ipv4_cidr` | `service_ipv4_cidr` |
+    | `cluster_encryption_config` | `encryption_config` |
+    | `cluster_security_group_id` | `security_group_id` |
+    | `cluster_security_group_name` | `security_group_name` |
+    | `cluster_security_group_additional_rules` | `security_group_additional_rules` |
+    | `cluster_security_group_tags` | `security_group_tags` |
+    | `cluster_addons` | `addons` |
+    | `cluster_addons_timeouts` | `addons_timeouts` |
+    | `cluster_identity_providers` | `identity_providers` |
+    | `cluster_timeouts` | `timeouts` |
+    | `cluster_upgrade_policy` | `upgrade_policy` |
+    | `cluster_compute_config` | `compute_config` |
+    | `create_cluster_security_group` | `create_security_group` |
+
+    #### Before / After Example
+
+    ```diff
+     module "eks" {
+       source  = "terraform-aws-modules/eks/aws"
+    -  version = "~> 20.0"
+    +  version = "~> 21.0"
+
+    -  cluster_name    = "my-cluster"
+    +  name            = "my-cluster"
+
+    -  cluster_version = "1.31"
+    +  kubernetes_version = "1.31"
+
+    -  cluster_endpoint_private_access = true
+    +  endpoint_private_access         = true
+
+    -  cluster_endpoint_public_access  = true
+    +  endpoint_public_access          = true
+
+    -  cluster_addons = {
+    +  addons = {
+         coredns    = { most_recent = true }
+         kube-proxy = { most_recent = true }
+         vpc-cni    = { most_recent = true }
+       }
+
+    -  enable_efa_support = true
+
+       eks_managed_node_groups = {
+    -    efa_group = {
+    -      enable_efa_support = true
+    -      enable_efa_only    = true
+    +    efa_group = {
+    +      enable_efa_support = true
+    +      # Must now specify the correct subnet explicitly
+    +      subnet_ids = [element(module.vpc.private_subnets, 0)]
+         }
+       }
+
+       self_managed_node_groups = {
+         example = {
+           mixed_instances_policy = {
+    +        # Wrap overrides in launch_template block
+    +        launch_template = {
+               override = [
+                 { instance_type = "m5.large" }
+               ]
+    +        }
+           }
+         }
+       }
+     }
+    ```
+
+    #### State Changes
+
+    No Terraform state moves are required for the v20 → v21 upgrade.
+  </Tab>
+</Tabs>

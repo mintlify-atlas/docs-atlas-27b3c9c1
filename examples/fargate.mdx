@@ -1,0 +1,251 @@
+---
+title: Fargate
+description: Deploy an EKS cluster that runs pods on AWS Fargate, eliminating the need to provision or manage EC2 nodes.
+---
+
+AWS Fargate is a serverless compute engine for containers. When combined with EKS, it lets you run Kubernetes pods without provisioning or managing EC2 instances. Each pod runs in its own isolated micro-VM, billed per pod rather than per node.
+
+Fargate profiles tell EKS which pods should run on Fargate by matching on namespace and optional label selectors. Any pod that matches a profile is automatically scheduled on Fargate.
+
+## Prerequisites
+
+- AWS credentials with permissions to create EKS, IAM, and VPC resources
+- Terraform >= 1.5.7
+- AWS provider >= 6.28
+- A VPC with private subnets (Fargate pods run in private subnets only)
+
+<Warning>
+  Fargate does not support `DaemonSet` workloads. If your cluster requires DaemonSets (e.g. for log shipping or monitoring agents), you will need at least one EC2 node group alongside your Fargate profiles, or use alternatives such as sidecar injection.
+</Warning>
+
+## Example code
+
+The `fargate_profiles` map is defined inline on the `module "eks"` block. The following example creates a cluster with Fargate profiles for the `default` and `kube-system` namespaces, which is a common pattern for fully serverless clusters.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  # Optional
+  endpoint_public_access = true
+
+  # Optional: Adds the current caller identity as an administrator via cluster access entry
+  enable_cluster_creator_admin_permissions = true
+
+  # EKS Addons — coredns must run on Fargate when there are no EC2 nodes
+  addons = {
+    coredns = {}
+    kube-proxy = {}
+    vpc-cni = {}
+  }
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  fargate_profiles = {
+    default = {
+      selectors = [
+        { namespace = "default" }
+      ]
+    }
+
+    kube_system = {
+      name = "kube-system"
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
+  }
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+### Complete VPC setup
+
+For a self-contained deployment that also provisions the VPC:
+
+```hcl
+provider "aws" {
+  region = "us-west-2"
+}
+
+data "aws_availability_zones" "available" {
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+locals {
+  name     = "my-fargate-cluster"
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+}
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+}
+
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = local.name
+  kubernetes_version = "1.33"
+
+  endpoint_public_access                   = true
+  enable_cluster_creator_admin_permissions = true
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  fargate_profiles = {
+    default = {
+      selectors = [
+        { namespace = "default" }
+      ]
+    }
+
+    kube_system = {
+      name = "kube-system"
+      selectors = [
+        { namespace = "kube-system" }
+      ]
+    }
+  }
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+## Key concepts
+
+### Fargate profile selectors
+
+Each entry in the `selectors` list can specify:
+- `namespace` (required) — pods in this namespace are eligible for Fargate
+- `labels` (optional) — additional label filters; all specified labels must match
+
+```hcl
+fargate_profiles = {
+  # Runs all pods in the "batch" namespace on Fargate
+  batch = {
+    selectors = [
+      { namespace = "batch" }
+    ]
+  }
+
+  # Only runs pods labelled "compute=fargate" in the "apps" namespace
+  apps_fargate = {
+    selectors = [
+      {
+        namespace = "apps"
+        labels    = { compute = "fargate" }
+      }
+    ]
+  }
+}
+```
+
+### IAM roles for Fargate
+
+The module creates a dedicated IAM execution role for each Fargate profile by default. You can share a single role across profiles by providing an `iam_role_arn` and setting `create_iam_role = false`.
+
+### CoreDNS on Fargate
+
+When running a fully Fargate cluster (no EC2 nodes), CoreDNS must also run on Fargate. This requires patching the CoreDNS deployment to remove the `eks.amazonaws.com/compute-type: ec2` annotation:
+
+```bash
+kubectl patch deployment coredns \
+  -n kube-system \
+  --type json \
+  -p '[{"op": "remove", "path": "/spec/template/metadata/annotations/eks.amazonaws.com~1compute-type"}]'
+```
+
+<Tip>
+  Alternatively, set `resolve_conflicts_on_create = "OVERWRITE"` on the `coredns` addon to have EKS automatically configure it for Fargate.
+</Tip>
+
+## Deploy
+
+<Steps>
+  <Step title="Initialize Terraform">
+    ```bash
+    terraform init
+    ```
+  </Step>
+
+  <Step title="Review the plan">
+    ```bash
+    terraform plan
+    ```
+  </Step>
+
+  <Step title="Apply">
+    ```bash
+    terraform apply
+    ```
+  </Step>
+
+  <Step title="Configure kubectl">
+    ```bash
+    aws eks update-kubeconfig --region us-west-2 --name my-fargate-cluster
+    ```
+  </Step>
+
+  <Step title="Verify Fargate nodes">
+    Pods scheduled on Fargate appear as nodes with the `fargate-` prefix.
+
+    ```bash
+    kubectl get nodes
+    ```
+  </Step>
+</Steps>
+
+## Key outputs
+
+| Output | Description |
+|---|---|
+| `cluster_name` | Name of the EKS cluster |
+| `cluster_endpoint` | Kubernetes API server endpoint |
+| `fargate_profiles` | Map of attributes for all Fargate profiles created |
+| `oidc_provider_arn` | OIDC provider ARN for IRSA (required for pod IAM roles) |
+
+## Limitations
+
+- **No DaemonSets** — Fargate does not support DaemonSet workloads
+- **No privileged containers** — pods running on Fargate cannot use `privileged: true`
+- **No hostPath volumes** — only `emptyDir`, `configMap`, `secret`, and persistent volume claims via EFS are supported
+- **No GPU** — Fargate does not support GPU instance types
+- **Regional availability** — not all AWS regions or Availability Zones support Fargate
+
+## Further reading
+
+- [AWS EKS Fargate documentation](https://docs.aws.amazon.com/eks/latest/userguide/fargate.html)
+- [EKS Fargate profile module reference](/modules/fargate-profile)

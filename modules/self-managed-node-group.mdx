@@ -1,0 +1,287 @@
+---
+title: Self-Managed Node Group
+description: Sub-module that creates a self-managed EC2 Auto Scaling Group for an EKS cluster, including a launch template, IAM instance profile, security group, and EKS access entry. Provides full control over ASG configuration not available with EKS managed node groups.
+---
+
+
+The `self-managed-node-group` sub-module creates an EC2 **Auto Scaling Group** that bootstraps into an EKS cluster. Unlike EKS managed node groups, self-managed node groups give you full control over the ASG configuration, including mixed instance policies, lifecycle hooks, instance refresh strategies, and detailed scaling metrics.
+
+The module is called internally by the root EKS module for each entry in the `self_managed_node_groups` variable, or it can be used standalone.
+
+<CardGroup cols={2}>
+  <Card title="Auto Scaling Group" icon="arrows-up-down">
+    Full ASG configuration including mixed instances policy, lifecycle hooks, capacity rebalancing, instance refresh, and scaling metrics.
+  </Card>
+  <Card title="Launch Template" icon="file-code">
+    EC2 launch template with full control over AMI, instance type, EBS volumes, network interfaces, metadata options, and placement.
+  </Card>
+  <Card title="IAM Instance Profile" icon="shield-halved">
+    An IAM role and instance profile with standard EKS node policies. Automatically registers an EKS access entry so nodes can join the cluster.
+  </Card>
+  <Card title="Security Group" icon="lock">
+    Dedicated security group with configurable ingress and egress rules.
+  </Card>
+</CardGroup>
+
+## Usage
+
+<Tabs>
+  <Tab title="Via root module (recommended)">
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+  vpc_id             = module.vpc.vpc_id
+  subnet_ids         = module.vpc.private_subnets
+
+  self_managed_node_groups = {
+    default = {
+      instance_type = "m6i.large"
+      min_size      = 2
+      max_size      = 10
+      desired_size  = 2
+    }
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Standalone">
+
+```hcl
+module "self_managed_node_group" {
+  source = "terraform-aws-modules/eks/aws//modules/self-managed-node-group"
+
+  name                = "separate-self-mng"
+  cluster_name        = "my-cluster"
+  kubernetes_version  = "1.33"
+  cluster_endpoint    = module.eks.cluster_endpoint
+  cluster_auth_base64 = module.eks.cluster_certificate_authority_data
+
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+
+  # Required when using outside the parent EKS module context
+  vpc_security_group_ids = [
+    module.eks.cluster_primary_security_group_id,
+    module.eks.cluster_security_group_id,
+  ]
+
+  min_size     = 1
+  max_size     = 10
+  desired_size = 1
+
+  launch_template_name = "separate-self-mng"
+  instance_type        = "m5.large"
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="Mixed instances (Spot + On-Demand)">
+
+```hcl
+module "self_managed_node_group" {
+  source = "terraform-aws-modules/eks/aws//modules/self-managed-node-group"
+
+  name             = "mixed"
+  cluster_name     = module.eks.cluster_name
+  cluster_endpoint = module.eks.cluster_endpoint
+  cluster_auth_base64 = module.eks.cluster_certificate_authority_data
+  subnet_ids          = module.vpc.private_subnets
+
+  vpc_security_group_ids = [module.eks.node_security_group_id]
+
+  min_size     = 2
+  max_size     = 20
+  desired_size = 4
+
+  use_mixed_instances_policy = true
+  mixed_instances_policy = {
+    instances_distribution = {
+      on_demand_base_capacity                  = 2
+      on_demand_percentage_above_base_capacity = 0
+      spot_allocation_strategy                 = "price-capacity-optimized"
+    }
+    launch_template = {
+      override = [
+        { instance_type = "m6i.large" },
+        { instance_type = "m6a.large" },
+        { instance_type = "m5.large" },
+      ]
+    }
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+## Key inputs
+
+### Cluster connectivity
+
+<ParamField path="cluster_name" type="string" required>
+  Name of the EKS cluster. Used in the bootstrap user data.
+</ParamField>
+
+<ParamField path="cluster_endpoint" type="string">
+  HTTPS endpoint of the EKS cluster API server. Required for bootstrap user data generation.
+</ParamField>
+
+<ParamField path="cluster_auth_base64" type="string">
+  Base64-encoded cluster certificate authority data. Required for bootstrap user data generation.
+</ParamField>
+
+<ParamField path="cluster_service_cidr" type="string">
+  Service CIDR of the EKS cluster. Used to configure the node's IP routing for cluster services.
+</ParamField>
+
+### Auto Scaling Group
+
+<ParamField path="min_size" type="number" default="1">
+  Minimum number of instances in the ASG.
+</ParamField>
+
+<ParamField path="max_size" type="number" default="3">
+  Maximum number of instances in the ASG.
+</ParamField>
+
+<ParamField path="desired_size" type="number" default="1">
+  Desired number of instances.
+</ParamField>
+
+<ParamField path="subnet_ids" type="list(string)">
+  Subnet IDs across which the ASG distributes instances.
+</ParamField>
+
+<ParamField path="use_mixed_instances_policy" type="bool" default="false">
+  Use a mixed instances policy to blend Spot and On-Demand instances with multiple instance types.
+</ParamField>
+
+<ParamField path="mixed_instances_policy" type="object({...})">
+  Configuration for the mixed instances policy. Includes `instances_distribution` (On-Demand base capacity, Spot strategy) and `launch_template.override` (list of instance types).
+</ParamField>
+
+<ParamField path="instance_refresh" type="object({...})">
+  Rolling instance refresh configuration. Defaults to `strategy = "Rolling"` with `min_healthy_percentage = 66`.
+</ParamField>
+
+<ParamField path="capacity_rebalance" type="bool">
+  Enable proactive capacity rebalancing for Spot instances. AWS will launch a replacement Spot instance before the existing one is interrupted.
+</ParamField>
+
+<ParamField path="protect_from_scale_in" type="bool" default="false">
+  Protect instances from scale-in termination. Useful when using Karpenter or another external autoscaler that manages termination.
+</ParamField>
+
+<ParamField path="termination_policies" type="list(string)" default="[]">
+  Ordered list of policies for determining which instances to terminate during scale-in. Valid values: `OldestInstance`, `NewestInstance`, `OldestLaunchTemplate`, `AllocationStrategy`, `Default`.
+</ParamField>
+
+<ParamField path="enabled_metrics" type="list(string)" default="[]">
+  CloudWatch ASG metrics to enable. Available metrics include `GroupDesiredCapacity`, `GroupInServiceInstances`, `GroupTotalInstances`, and more.
+</ParamField>
+
+<ParamField path="initial_lifecycle_hooks" type="list(object({...}))">
+  Lifecycle hooks to attach to the ASG before instances launch. Useful for custom initialization or draining logic.
+</ParamField>
+
+### Launch template
+
+<ParamField path="instance_type" type="string" default="m6i.large">
+  EC2 instance type for the launch template. Mutually exclusive with `instance_requirements`.
+</ParamField>
+
+<ParamField path="ami_id" type="string">
+  Custom AMI ID. When omitted, the module looks up the latest EKS-optimized AMI via SSM based on `ami_type` and `kubernetes_version`.
+</ParamField>
+
+<ParamField path="ami_type" type="string" default="AL2023_x86_64_STANDARD">
+  AMI family to use for automatic AMI lookup. Common values: `AL2023_x86_64_STANDARD`, `AL2023_ARM_64_STANDARD`, `BOTTLEROCKET_x86_64`.
+</ParamField>
+
+<ParamField path="kubernetes_version" type="string">
+  Kubernetes version used to look up the default AMI when `ami_id` is not provided.
+</ParamField>
+
+<ParamField path="block_device_mappings" type="map(object({...}))">
+  EBS volume configurations for root and additional volumes.
+</ParamField>
+
+<ParamField path="metadata_options" type="object({...})">
+  IMDSv2 settings. Defaults to `http_tokens = "required"` (IMDSv2 enforced).
+</ParamField>
+
+<ParamField path="enable_efa_support" type="bool" default="false">
+  Enable Elastic Fabric Adapter (EFA) network interfaces for HPC and tightly-coupled workloads.
+</ParamField>
+
+### Bootstrap
+
+<ParamField path="pre_bootstrap_user_data" type="string">
+  Script injected before the EKS bootstrap script. Not applicable to Bottlerocket AMIs.
+</ParamField>
+
+<ParamField path="post_bootstrap_user_data" type="string">
+  Script appended after the EKS bootstrap script.
+</ParamField>
+
+<ParamField path="bootstrap_extra_args" type="string">
+  Additional arguments passed to the bootstrap script. For Bottlerocket, these are TOML settings.
+</ParamField>
+
+### IAM
+
+<ParamField path="create_iam_instance_profile" type="bool" default="true">
+  Create a new IAM instance profile. Set to `false` and provide `iam_instance_profile_arn` to use an existing profile.
+</ParamField>
+
+<ParamField path="iam_instance_profile_arn" type="string">
+  ARN of an existing IAM instance profile. Required when `create_iam_instance_profile = false`.
+</ParamField>
+
+<ParamField path="iam_role_additional_policies" type="map(string)" default="{}">
+  Additional managed policies to attach to the node IAM role.
+</ParamField>
+
+<ParamField path="create_access_entry" type="bool" default="true">
+  Create an EKS access entry for the node IAM role so that instances can join the cluster. Set to `false` when you manage access entries externally.
+</ParamField>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `autoscaling_group_id` | ID of the Auto Scaling Group |
+| `autoscaling_group_arn` | ARN of the Auto Scaling Group |
+| `autoscaling_group_name` | Name of the Auto Scaling Group |
+| `autoscaling_group_min_size` | Configured minimum size |
+| `autoscaling_group_max_size` | Configured maximum size |
+| `autoscaling_group_desired_capacity` | Configured desired capacity |
+| `iam_role_arn` | ARN of the node IAM role |
+| `iam_role_name` | Name of the node IAM role |
+| `iam_instance_profile_arn` | ARN of the EC2 instance profile |
+| `launch_template_id` | ID of the EC2 launch template |
+| `launch_template_arn` | ARN of the EC2 launch template |
+| `launch_template_name` | Name of the EC2 launch template |
+| `launch_template_latest_version` | Latest version number |
+| `security_group_id` | ID of the node security group |
+| `security_group_arn` | ARN of the node security group |
+| `image_id` | AMI ID resolved and used by the launch template |
+| `user_data` | Base64-encoded user data rendered for the instances |
+| `access_entry_arn` | ARN of the EKS access entry |
+
+<Note>
+  Self-managed nodes require explicit bootstrap configuration (`cluster_endpoint` and `cluster_auth_base64`). The root EKS module passes these automatically; when calling the sub-module standalone you must supply them from `module.eks.*` outputs.
+</Note>
+
+<Warning>
+  The `instance_refresh` block defaults to a rolling strategy with `min_healthy_percentage = 66`. Changing the launch template will automatically trigger an instance refresh. Ensure your workloads tolerate rolling restarts before applying changes in production.
+</Warning>

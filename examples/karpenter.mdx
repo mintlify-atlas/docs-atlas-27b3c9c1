@@ -1,0 +1,339 @@
+---
+title: Karpenter
+description: Deploy an EKS cluster with Karpenter installed for intelligent, workload-driven node provisioning.
+---
+
+[Karpenter](https://karpenter.sh/) is an open-source node provisioner for Kubernetes. Instead of pre-provisioning fixed node groups, Karpenter watches for unschedulable pods and immediately provisions the right instance type at the right size. It decommissions nodes when they are no longer needed, reducing waste.
+
+This example uses the `modules/karpenter` sub-module to create the required IAM roles, SQS queue (for spot interruption handling), and pod identity association. A small EKS managed node group labelled `karpenter.sh/controller: "true"` is created as a stable landing zone for the Karpenter controller itself — Karpenter should not run on nodes it manages.
+
+## Prerequisites
+
+- AWS credentials with permissions to create EKS, EC2, IAM, SQS, and VPC resources
+- Terraform >= 1.5.7
+- AWS provider >= 6.28
+- Helm provider (the example installs Karpenter via a Helm chart)
+- `aws` CLI installed locally (used by the Helm provider to authenticate)
+
+<Note>
+  The example pulls the Karpenter Helm chart from the public ECR (`public.ecr.aws/karpenter`). An `aws_ecrpublic_authorization_token` data source is used to authenticate, and it **must** be fetched from the `us-east-1` region regardless of where your cluster runs.
+</Note>
+
+## Example code
+
+The following is the complete `main.tf` from [`examples/karpenter`](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/karpenter).
+
+```hcl
+provider "aws" {
+  region = local.region
+}
+
+provider "helm" {
+  kubernetes = {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec = {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      # This requires the awscli to be installed locally where Terraform is executed
+      args = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    }
+  }
+}
+
+data "aws_availability_zones" "available" {
+  # Exclude local zones
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
+}
+
+data "aws_ecrpublic_authorization_token" "token" {
+  region = "us-east-1"
+}
+
+locals {
+  name   = "ex-${basename(path.cwd)}"
+  region = "eu-west-1"
+
+  vpc_cidr = "10.0.0.0/16"
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    Example    = local.name
+    GithubRepo = "terraform-aws-eks"
+    GithubOrg  = "terraform-aws-modules"
+  }
+}
+
+################################################################################
+# EKS Module
+################################################################################
+
+module "eks" {
+  source = "../.."  # use "terraform-aws-modules/eks/aws" version "~> 21.0" from registry
+
+  name               = local.name
+  kubernetes_version = "1.33"
+
+  # Gives Terraform identity admin access to cluster which will
+  # allow deploying resources (Karpenter) into the cluster
+  enable_cluster_creator_admin_permissions = true
+  endpoint_public_access                   = true
+
+  # EKS Provisioned Control Plane configuration
+  control_plane_scaling_config = {
+    tier = "standard"
+  }
+
+  addons = {
+    coredns = {}
+    eks-pod-identity-agent = {
+      before_compute = true
+    }
+    kube-proxy = {}
+    vpc-cni = {
+      before_compute = true
+    }
+  }
+
+  vpc_id                   = module.vpc.vpc_id
+  subnet_ids               = module.vpc.private_subnets
+  control_plane_subnet_ids = module.vpc.intra_subnets
+
+  eks_managed_node_groups = {
+    karpenter = {
+      ami_type       = "BOTTLEROCKET_x86_64"
+      instance_types = ["m5.large"]
+
+      min_size     = 2
+      max_size     = 3
+      desired_size = 2
+
+      labels = {
+        # Used to ensure Karpenter runs on nodes that it does not manage
+        "karpenter.sh/controller" = "true"
+      }
+    }
+  }
+
+  node_security_group_tags = merge(local.tags, {
+    # NOTE - if creating multiple security groups with this module, only tag the
+    # security group that Karpenter should utilize with the following tag
+    # (i.e. - at most, only one security group should have this tag in your account)
+    "karpenter.sh/discovery" = local.name
+  })
+
+  tags = local.tags
+}
+
+################################################################################
+# Karpenter
+################################################################################
+
+module "karpenter" {
+  source = "../../modules/karpenter"  # use "terraform-aws-modules/eks/aws//modules/karpenter" from registry
+
+  cluster_name = module.eks.cluster_name
+
+  # Name needs to match role name passed to the EC2NodeClass
+  node_iam_role_use_name_prefix   = false
+  node_iam_role_name              = local.name
+  create_pod_identity_association = true
+
+  # Used to attach additional IAM policies to the Karpenter node IAM role
+  node_iam_role_additional_policies = {
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  tags = local.tags
+}
+
+module "karpenter_disabled" {
+  source = "../../modules/karpenter"  # use "terraform-aws-modules/eks/aws//modules/karpenter" from registry
+
+  create = false
+}
+
+################################################################################
+# Karpenter Helm chart & manifests
+# Not required; just to demonstrate functionality of the sub-module
+################################################################################
+
+resource "helm_release" "karpenter" {
+  namespace           = "kube-system"
+  name                = "karpenter"
+  repository          = "oci://public.ecr.aws/karpenter"
+  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+  repository_password = data.aws_ecrpublic_authorization_token.token.password
+  chart               = "karpenter"
+  version             = "1.6.0"
+  wait                = false
+
+  values = [
+    <<-EOT
+    nodeSelector:
+      karpenter.sh/controller: 'true'
+    dnsPolicy: Default
+    settings:
+      clusterName: ${module.eks.cluster_name}
+      clusterEndpoint: ${module.eks.cluster_endpoint}
+      interruptionQueue: ${module.karpenter.queue_name}
+    webhook:
+      enabled: false
+    EOT
+  ]
+}
+
+################################################################################
+# Supporting Resources
+################################################################################
+
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 6.0"
+
+  name = local.name
+  cidr = local.vpc_cidr
+
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 52)]
+
+  enable_nat_gateway = true
+  single_nat_gateway = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
+  }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+    # Tags subnets for Karpenter auto-discovery
+    "karpenter.sh/discovery" = local.name
+  }
+
+  tags = local.tags
+}
+```
+
+## How the Karpenter sub-module works
+
+The `modules/karpenter` sub-module creates the AWS infrastructure that Karpenter needs to function:
+
+| Resource | Purpose |
+|---|---|
+| IAM node role | Attached to EC2 instances launched by Karpenter |
+| IAM controller role | Used by the Karpenter controller pod (via pod identity) |
+| Pod identity association | Binds the controller IAM role to the Karpenter service account |
+| SQS queue | Receives EC2 interruption and rebalance events for graceful handling |
+| EventBridge rules | Route spot interruption, instance rebalance, and state-change events to SQS |
+
+### Discovery tags
+
+Karpenter uses two discovery tags to find the resources it should manage:
+
+```hcl
+# Tag on the node security group — tells Karpenter which SG to apply to launched nodes
+node_security_group_tags = {
+  "karpenter.sh/discovery" = local.name
+}
+
+# Tag on private subnets — tells Karpenter which subnets to use for launched nodes
+private_subnet_tags = {
+  "karpenter.sh/discovery" = local.name
+}
+```
+
+Only **one** security group per AWS account should carry the `karpenter.sh/discovery` tag. If multiple clusters share the same account, each must use a distinct cluster name as the tag value.
+
+### Karpenter controller isolation
+
+The managed node group uses the label `karpenter.sh/controller: "true"`. The Karpenter Helm values target this label via `nodeSelector`, ensuring the controller always runs on the stable, non-Karpenter-managed node group:
+
+```yaml
+nodeSelector:
+  karpenter.sh/controller: 'true'
+```
+
+### After installation: NodePool and EC2NodeClass
+
+The Helm chart installs the Karpenter controller but does not create any `NodePool` or `EC2NodeClass` resources. You must apply those separately. The role name passed to `EC2NodeClass` must exactly match `node_iam_role_name` in the sub-module:
+
+```yaml
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiSelectorTerms:
+    - alias: bottlerocket@latest
+  role: ex-karpenter   # must match module.karpenter.node_iam_role_name
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: ex-karpenter
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: ex-karpenter
+```
+
+## Deploy
+
+<Steps>
+  <Step title="Initialize Terraform">
+    ```bash
+    terraform init
+    ```
+  </Step>
+
+  <Step title="Review the plan">
+    ```bash
+    terraform plan
+    ```
+  </Step>
+
+  <Step title="Apply">
+    Cluster creation plus the Helm release typically takes 15–20 minutes.
+
+    ```bash
+    terraform apply
+    ```
+  </Step>
+
+  <Step title="Configure kubectl">
+    ```bash
+    aws eks update-kubeconfig --region eu-west-1 --name ex-karpenter
+    ```
+  </Step>
+
+  <Step title="Verify Karpenter is running">
+    ```bash
+    kubectl get pods -n kube-system -l app.kubernetes.io/name=karpenter
+    ```
+  </Step>
+
+  <Step title="Apply NodePool and EC2NodeClass">
+    Apply the sample manifests from the repository to start provisioning nodes:
+
+    ```bash
+    kubectl apply -f karpenter.yaml
+    ```
+  </Step>
+</Steps>
+
+## Key outputs
+
+| Output | Description |
+|---|---|
+| `cluster_name` | Name of the EKS cluster |
+| `cluster_endpoint` | Kubernetes API server endpoint |
+| `karpenter.queue_name` | SQS queue name for interruption events |
+| `karpenter.node_iam_role_name` | IAM role name to reference in `EC2NodeClass` |
+| `karpenter.node_iam_role_arn` | IAM role ARN attached to Karpenter-provisioned nodes |
+
+## Full example on GitHub
+
+[View the complete example](https://github.com/terraform-aws-modules/terraform-aws-eks/tree/master/examples/karpenter) including sample `NodePool` / `EC2NodeClass` manifests (`karpenter.yaml`) and a test deployment (`inflate.yaml`).

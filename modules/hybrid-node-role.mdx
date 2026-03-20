@@ -1,0 +1,204 @@
+---
+title: Hybrid Node Role
+description: Sub-module that creates the IAM role and policy resources required to authenticate Amazon EKS Hybrid Nodes with an EKS cluster, supporting both AWS SSM (default) and IAM Roles Anywhere.
+---
+
+
+EKS Hybrid Nodes are physical or virtual machines outside of AWS that join an EKS cluster. They use the AWS IAM Authenticator together with temporary IAM credentials provisioned by either **AWS SSM** (the default) or **AWS IAM Roles Anywhere**.
+
+This sub-module creates the IAM role and attached policy that grant those credentials the minimum permissions needed to register and operate as an EKS node. The role ARN is then referenced in the root module's `access_entries` variable with type `HYBRID_LINUX`.
+
+<CardGroup cols={2}>
+  <Card title="SSM (default)" icon="aws">
+    Hybrid nodes connect via AWS Systems Manager. No certificate infrastructure is required. SSM provisions temporary credentials that assume the hybrid node role.
+  </Card>
+  <Card title="IAM Roles Anywhere" icon="certificate">
+    Hybrid nodes use X.509 certificates and a trust anchor to obtain temporary credentials. Useful when you want PKI-based authentication independent of SSM connectivity.
+  </Card>
+</CardGroup>
+
+## Usage
+
+<Tabs>
+  <Tab title="SSM (default)">
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  # ...
+
+  access_entries = {
+    hybrid-node-role = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+}
+
+module "eks_hybrid_node_role" {
+  source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
+
+  name = "hybrid"
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+  <Tab title="IAM Roles Anywhere">
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  # ...
+
+  access_entries = {
+    hybrid-node-role = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+}
+
+module "eks_hybrid_node_role" {
+  source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
+
+  name = "hybrid-ira"
+
+  enable_ira = true
+
+  ira_trust_anchor_source_type           = "CERTIFICATE_BUNDLE"
+  ira_trust_anchor_x509_certificate_data = <<-EOT
+    MIIFMzCCAxugAwIBAgIRAMnVXU7ncv/+Cl16eJbZ9hswDQYJKoZIhvcNAQELBQAw
+    ...
+    MGx/BMRkrNUVcg3xA0lhECo/olodCkmZo5/mjybbjFQwJzDSKFoW
+  EOT
+
+  tags = {
+    Environment = "dev"
+    Terraform   = "true"
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+<Note>
+  The `arn` output of this module is the value you pass to `principal_arn` in the root module's `access_entries`. This is what allows the hybrid node's credentials to be recognized by the EKS cluster.
+</Note>
+
+## Key inputs
+
+<ParamField path="name" type="string" default="EKSHybridNode">
+  Name of the IAM role (and prefix for the associated policy). When using the role name as a fixed reference, set `use_name_prefix = false`.
+</ParamField>
+
+<ParamField path="use_name_prefix" type="bool" default="true">
+  Use `name` as a prefix for uniqueness. Set to `false` when you need the exact role name in tooling or access entry references.
+</ParamField>
+
+<ParamField path="enable_ira" type="bool" default="false">
+  Enable IAM Roles Anywhere. When `true`, the module also creates a Roles Anywhere trust anchor and profile, and an intermediate IAM role used in the credential vending chain.
+</ParamField>
+
+<ParamField path="trust_anchor_arns" type="list(string)" default="[]">
+  ARNs of existing IAM Roles Anywhere trust anchors. Required when `enable_ira = true` and you want to use pre-existing anchors instead of creating a new one.
+</ParamField>
+
+<ParamField path="ira_trust_anchor_source_type" type="string">
+  Source type for the trust anchor. Accepted values: `CERTIFICATE_BUNDLE`, `AWS_ACM_PCA`. Required when `enable_ira = true` and creating a new trust anchor.
+</ParamField>
+
+<ParamField path="ira_trust_anchor_x509_certificate_data" type="string">
+  PEM-encoded X.509 certificate bundle for the trust anchor. Used when `ira_trust_anchor_source_type = "CERTIFICATE_BUNDLE"`.
+</ParamField>
+
+<ParamField path="ira_trust_anchor_acm_pca_arn" type="string">
+  ARN of the ACM Private CA that issued the trust anchor certificate. Used when `ira_trust_anchor_source_type = "AWS_ACM_PCA"`.
+</ParamField>
+
+<ParamField path="enable_pod_identity" type="bool" default="true">
+  Allow hybrid nodes to host EKS Pod Identity agent. Adds the necessary trust policy statement so pods running on hybrid nodes can use Pod Identity.
+</ParamField>
+
+<ParamField path="cluster_arns" type="list(string)" default="['*']">
+  List of EKS cluster ARNs the node role is allowed to call `eks:DescribeCluster` on. Defaults to all clusters; scope this down in production.
+</ParamField>
+
+<ParamField path="permissions_boundary_arn" type="string">
+  ARN of a permissions boundary policy to attach to the IAM role.
+</ParamField>
+
+<ParamField path="tags" type="map(string)" default="{}">
+  Tags applied to all resources created by this module.
+</ParamField>
+
+## Key outputs
+
+| Output | Description |
+|--------|-------------|
+| `arn` | ARN of the hybrid node IAM role — use this as `principal_arn` in `access_entries` |
+| `name` | Name of the hybrid node IAM role |
+| `unique_id` | Stable unique identifier for the IAM role |
+| `intermediate_role_arn` | ARN of the intermediate IAM role (IAM Roles Anywhere only) |
+| `intermediate_role_name` | Name of the intermediate IAM role |
+
+## How it integrates with the root module
+
+Hybrid nodes are declared via the root module's `remote_network_config` variable, which configures the VPC CNI for remote node connectivity. The access entry (created separately in `access_entries`) is what allows the node role's credentials to authenticate.
+
+```hcl
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+
+  # Remote network configuration for hybrid nodes
+  remote_network_config = {
+    remote_node_networks = [
+      { cidrs = ["172.16.0.0/24"] }
+    ]
+    remote_pod_networks = [
+      { cidrs = ["172.16.1.0/24"] }
+    ]
+  }
+
+  access_entries = {
+    hybrid-nodes = {
+      principal_arn = module.eks_hybrid_node_role.arn
+      type          = "HYBRID_LINUX"
+    }
+  }
+}
+```
+
+## Resources created
+
+<Accordion title="SSM mode (default)">
+
+- `aws_iam_role.this` — hybrid node role with SSM trust policy
+- `aws_iam_policy.this` — EKS hybrid node policy (describe cluster, etc.)
+- `aws_iam_role_policy_attachment.this` — attaches the policy to the role
+
+</Accordion>
+
+<Accordion title="IAM Roles Anywhere mode (enable_ira = true)">
+
+- `aws_iam_role.this` — hybrid node role
+- `aws_iam_policy.this` — EKS hybrid node policy
+- `aws_iam_role_policy_attachment.this` — attaches the policy
+- `aws_iam_role.intermediate` — intermediate role used in the credential chain
+- `aws_iam_policy.intermediate` — policy for the intermediate role
+- `aws_iam_role_policy_attachment.intermediate` — attaches the intermediate policy
+- `aws_rolesanywhere_trust_anchor.this` — trust anchor (when creating a new one)
+- `aws_rolesanywhere_profile.this` — Roles Anywhere profile
+
+</Accordion>
+
+<Warning>
+  When using IAM Roles Anywhere, the `trust_anchor_arns` list must be provided or a new trust anchor must be configured via `ira_trust_anchor_source_type`. The module will error if `enable_ira = true` and neither is set.
+</Warning>

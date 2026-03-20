@@ -1,0 +1,214 @@
+---
+title: IAM Roles for Service Accounts (IRSA)
+description: Enable IRSA to grant Kubernetes pods fine-grained AWS IAM permissions using an OIDC provider backed by the EKS cluster.
+---
+
+IAM Roles for Service Accounts (IRSA) allows Kubernetes pods to assume AWS IAM roles directly, without needing node-level instance profiles or long-lived credentials. The EKS cluster's OIDC provider acts as the identity token issuer; IAM verifies the token before granting the role.
+
+## How IRSA Works
+
+<Steps>
+  <Step title="OIDC provider is created">
+    The module creates an `aws_iam_openid_connect_provider` resource backed by the EKS cluster's OIDC issuer URL. This is enabled by default via `enable_irsa = true`.
+  </Step>
+  <Step title="IAM role is configured to trust the provider">
+    You create an IAM role with a trust policy that allows the OIDC provider to assume it, scoped to a specific Kubernetes service account.
+  </Step>
+  <Step title="Service account is annotated">
+    The Kubernetes service account is annotated with the IAM role ARN. The EKS pod identity webhook injects credentials into pods using that service account.
+  </Step>
+  <Step title="Pod receives temporary credentials">
+    When a pod starts, it receives temporary AWS credentials via a projected volume. The AWS SDK picks these up automatically.
+  </Step>
+</Steps>
+
+<Note>
+For new clusters, consider using [EKS Pod Identity](/configuration/addons#pod-identity-association) instead of IRSA. Pod Identity does not require annotating service accounts with role ARNs and simplifies the trust policy configuration.
+</Note>
+
+---
+
+## Enabling IRSA
+
+IRSA is enabled by default. The module creates the OIDC provider automatically when `enable_irsa = true`.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  enable_irsa = true  # default
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+```
+
+To disable OIDC provider creation (for example, if you manage it separately):
+
+```hcl
+module "eks" {
+  enable_irsa = false
+}
+```
+
+---
+
+## OIDC Provider Outputs
+
+After applying, the module exposes the OIDC provider details as outputs:
+
+| Output | Description |
+|---|---|
+| `oidc_provider` | The OIDC provider URL (without `https://` prefix) |
+| `oidc_provider_arn` | Full ARN of the IAM OIDC provider resource |
+| `cluster_oidc_issuer_url` | The full OIDC issuer URL with `https://` prefix |
+| `cluster_dualstack_oidc_issuer_url` | Dual-stack OIDC issuer URL (for IPv6 clusters) |
+
+---
+
+## Creating a Service Account IAM Role
+
+Use the module outputs to build the trust policy for your service account IAM roles. The trust policy must reference the OIDC provider ARN and scope to the specific namespace and service account.
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  name               = "my-cluster"
+  kubernetes_version = "1.33"
+
+  enable_irsa = true
+
+  vpc_id     = "vpc-1234556abcdef"
+  subnet_ids = ["subnet-abcde012", "subnet-bcde012a", "subnet-fghi345a"]
+}
+
+# IAM role for a service account in the 'production' namespace
+data "aws_iam_policy_document" "s3_reader_assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.oidc_provider}:sub"
+      values   = ["system:serviceaccount:production:s3-reader"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.oidc_provider}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "s3_reader" {
+  name               = "eks-s3-reader"
+  assume_role_policy = data.aws_iam_policy_document.s3_reader_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "s3_reader" {
+  role       = aws_iam_role.s3_reader.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+}
+```
+
+The corresponding Kubernetes service account:
+
+```bash
+kubectl create serviceaccount s3-reader -n production
+kubectl annotate serviceaccount s3-reader \
+  -n production \
+  eks.amazonaws.com/role-arn=arn:aws:iam::123456789012:role/eks-s3-reader
+```
+
+---
+
+## Custom OIDC Audiences
+
+By default, the OIDC provider audience is `sts.amazonaws.com`. Add additional client IDs (audiences) with `openid_connect_audiences`:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  enable_irsa = true
+  openid_connect_audiences = [
+    "sts.amazonaws.com",
+    "https://kubernetes.default.svc",
+  ]
+}
+```
+
+---
+
+## Custom OIDC Thumbprints
+
+The module automatically retrieves the root CA thumbprint for the OIDC issuer (controlled by `include_oidc_root_ca_thumbprint = true`). To add additional thumbprints — for example during a certificate rotation — use `custom_oidc_thumbprints`:
+
+```hcl
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 21.0"
+
+  # ...
+
+  enable_irsa                    = true
+  include_oidc_root_ca_thumbprint = true  # default
+  custom_oidc_thumbprints = [
+    "9e99a48a9960b14926bb7f3b02e22da2b0ab7280",
+  ]
+}
+```
+
+---
+
+## Dual-Stack OIDC (IPv6 Clusters)
+
+For IPv6 clusters, use the `cluster_dualstack_oidc_issuer_url` output instead of `cluster_oidc_issuer_url` to build trust policies. This URL supports both IPv4 and IPv6 clients.
+
+```hcl
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      # Use dualstack issuer URL for IPv6 clusters
+      variable = "${trimprefix(module.eks.cluster_dualstack_oidc_issuer_url, "https://")}:sub"
+      values   = ["system:serviceaccount:default:my-service-account"]
+    }
+  }
+}
+```
+
+---
+
+## IRSA Variable Reference
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `enable_irsa` | `bool` | `true` | Create the IAM OIDC provider for the cluster |
+| `openid_connect_audiences` | `list(string)` | `[]` | Additional audience client IDs for the OIDC provider |
+| `include_oidc_root_ca_thumbprint` | `bool` | `true` | Automatically retrieve and include the root CA thumbprint |
+| `custom_oidc_thumbprints` | `list(string)` | `[]` | Additional certificate thumbprints to trust |
